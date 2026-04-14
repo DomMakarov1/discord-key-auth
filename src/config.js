@@ -10,7 +10,8 @@ export const config = {
   discordToken: required("DISCORD_TOKEN"),
   discordClientId: required("DISCORD_CLIENT_ID"),
   discordGuildId: required("DISCORD_GUILD_ID"),
-  apiPort: Number(process.env.API_PORT || 3000),
+  // Railway/Render set PORT; local dev can use API_PORT or default 3000.
+  apiPort: Number(process.env.PORT || process.env.API_PORT || 3000),
   jwtSecret: required("JWT_SECRET"),
   adminDiscordIds: (process.env.ADMIN_DISCORD_IDS || "")
     .split(",")
