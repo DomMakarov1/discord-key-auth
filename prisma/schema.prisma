@@ -1,0 +1,60 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            Int       @id @default(autoincrement())
+  discordId     String?   @unique
+  username      String    @unique
+  passwordHash  String
+  rank          String    @default("Member")
+  blacklisted   Boolean   @default(false)
+  createdAt     DateTime  @default(now())
+  licenses      License[]
+  keysUsed      Key[]     @relation("KeyRedeemer")
+  keysAssigned  Key[]     @relation("KeyAssignee")
+  sessions      Session[]
+}
+
+model Key {
+  id            Int       @id @default(autoincrement())
+  code          String    @unique
+  tier          String
+  durationDays  Int
+  createdAt     DateTime  @default(now())
+  assignedToId  Int?
+  assignedTo    User?     @relation("KeyAssignee", fields: [assignedToId], references: [id])
+  redeemedAt    DateTime?
+  redeemedById  Int?
+  redeemedBy    User?     @relation("KeyRedeemer", fields: [redeemedById], references: [id])
+}
+
+model License {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  tier      String
+  active    Boolean  @default(true)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id])
+}
+
+model Session {
+  id             Int      @id @default(autoincrement())
+  userId         Int
+  tokenJti       String   @unique
+  createdAt      DateTime @default(now())
+  startedAt      DateTime @default(now())
+  endedAt        DateTime?
+  revoked        Boolean  @default(false)
+  robloxUserId   String?
+  robloxGameId   String?
+  robloxPlaceId  String?
+  lastSeenAt     DateTime?
+  user           User     @relation(fields: [userId], references: [id])
+}
