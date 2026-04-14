@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node src/index.js",
+    "build": "prisma generate",
+    "start": "prisma migrate deploy && node src/index.js",
     "dev": "node --watch src/index.js",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev --name init"
