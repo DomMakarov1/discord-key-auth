@@ -1,9 +1,14 @@
+import path from "path";
+import { fileURLToPath } from "url";
 import express from "express";
 import { loginUser, scriptLoginWithPassword, scriptLoginWithSavedKey, validateToken } from "./auth.js";
 import { prisma } from "./db.js";
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
 export function createApi() {
   const app = express();
+  app.use(express.static(path.join(__dirname, "../public")));
   app.use(express.json());
 
   app.get("/health", (_req, res) => {
