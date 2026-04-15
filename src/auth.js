@@ -434,6 +434,7 @@ async function assertUserInGameWithScript(userId) {
       endedAt: null,
       revoked: false,
       lastSeenAt: { gte: cutoff },
+      robloxUserId: { not: null },
     },
     orderBy: { lastSeenAt: "desc" },
   });
