@@ -159,24 +159,18 @@ const commands = [
   new SlashCommandBuilder().setName("unlink").setDescription("User: unlink your Discord account"),
   new SlashCommandBuilder()
     .setName("kick")
-    .setDescription("Admin: kick user by Discord @/id or script username")
-    .addUserOption((o) =>
-      o.setName("user").setDescription("Discord user target").setRequired(false)
-    )
+    .setDescription("Admin: kick user by script username or Discord @/id")
     .addStringOption((o) =>
-      o.setName("target").setDescription("Script username or Discord id/mention").setRequired(false)
+      o.setName("target").setDescription("Script username or Discord @mention/id").setRequired(true)
     ),
   new SlashCommandBuilder()
     .setName("message")
-    .setDescription("Admin: message user by Discord @/id or script username")
+    .setDescription("Admin: message user by script username or Discord @/id")
     .addStringOption((o) =>
       o.setName("text").setDescription("Message text").setRequired(true).setMaxLength(500)
     )
-    .addUserOption((o) =>
-      o.setName("user").setDescription("Discord user target").setRequired(false)
-    )
     .addStringOption((o) =>
-      o.setName("target").setDescription("Script username or Discord id/mention").setRequired(false)
+      o.setName("target").setDescription("Script username or Discord @mention/id").setRequired(true)
     ),
   new SlashCommandBuilder()
     .setName("presence")
@@ -496,10 +490,8 @@ export async function startBot() {
 
       if (interaction.commandName === "kick") {
         requireAdmin(interaction);
-        const targetUser = interaction.options.getUser("user");
         const targetText = interaction.options.getString("target");
-        const identity = targetUser ? targetUser.id : targetText;
-        if (!identity) throw new Error("Provide either user:@discord or target:<username|discord id>");
+        const identity = targetText;
         const out = await enqueueKickByDiscordId(identity);
         await interaction.reply({
           content: `Kick queued for **${out.username}** (command #${out.commandId}).`,
@@ -510,10 +502,8 @@ export async function startBot() {
 
       if (interaction.commandName === "message") {
         requireAdmin(interaction);
-        const targetUser = interaction.options.getUser("user");
         const targetText = interaction.options.getString("target");
-        const identity = targetUser ? targetUser.id : targetText;
-        if (!identity) throw new Error("Provide either user:@discord or target:<username|discord id>");
+        const identity = targetText;
         const text = interaction.options.getString("text", true);
         const out = await enqueueMessageByDiscordId(identity, text);
         await interaction.reply({

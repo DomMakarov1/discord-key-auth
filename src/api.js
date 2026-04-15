@@ -17,6 +17,15 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export function createApi() {
   const app = express();
+  const extractToken = (req) => {
+    const auth = req.headers.authorization || "";
+    const m = auth.match(/^Bearer\s+(.+)$/i);
+    if (m && m[1]) return m[1];
+    if (req.body && typeof req.body.token === "string" && req.body.token.trim() !== "") {
+      return req.body.token.trim();
+    }
+    return null;
+  };
 
   // Raw UniversalAdmin client script for HttpGet + loadstring (rejoin auto-reexec).
   // Tries public/ first, then repo-root UniversalAdmin.lua when the full monorepo is deployed.
@@ -102,11 +111,10 @@ export function createApi() {
 
   app.post("/client/presence", async (req, res) => {
     try {
-      const auth = req.headers.authorization || "";
-      const m = auth.match(/^Bearer\s+(.+)$/i);
-      if (!m) return res.status(401).json({ ok: false, error: "Bearer token required" });
+      const token = extractToken(req);
+      if (!token) return res.status(401).json({ ok: false, error: "token required" });
       const { robloxUserId, placeId, gameId } = req.body || {};
-      await updateScriptPresence(m[1], { robloxUserId, placeId, gameId });
+      await updateScriptPresence(token, { robloxUserId, placeId, gameId });
       res.json({ ok: true });
     } catch (err) {
       res.status(401).json({ ok: false, error: err.message });
@@ -115,10 +123,21 @@ export function createApi() {
 
   app.get("/client/commands", async (req, res) => {
     try {
-      const auth = req.headers.authorization || "";
-      const m = auth.match(/^Bearer\s+(.+)$/i);
-      if (!m) return res.status(401).json({ ok: false, error: "Bearer token required" });
-      const commands = await fetchPendingClientCommands(m[1]);
+      const token = extractToken(req);
+      if (!token) return res.status(401).json({ ok: false, error: "token required" });
+      const commands = await fetchPendingClientCommands(token);
+      res.json({ ok: true, commands });
+    } catch (err) {
+      res.status(401).json({ ok: false, error: err.message });
+    }
+  });
+
+  // POST variant is more executor-friendly for client polling than GET with custom headers.
+  app.post("/client/commands", async (req, res) => {
+    try {
+      const token = extractToken(req);
+      if (!token) return res.status(401).json({ ok: false, error: "token required" });
+      const commands = await fetchPendingClientCommands(token);
       res.json({ ok: true, commands });
     } catch (err) {
       res.status(401).json({ ok: false, error: err.message });
@@ -127,11 +146,10 @@ export function createApi() {
 
   app.post("/client/ack", async (req, res) => {
     try {
-      const auth = req.headers.authorization || "";
-      const m = auth.match(/^Bearer\s+(.+)$/i);
-      if (!m) return res.status(401).json({ ok: false, error: "Bearer token required" });
+      const token = extractToken(req);
+      if (!token) return res.status(401).json({ ok: false, error: "token required" });
       const { commandId, status, error } = req.body || {};
-      await ackClientCommand(m[1], commandId, status, error);
+      await ackClientCommand(token, commandId, status, error);
       res.json({ ok: true });
     } catch (err) {
       res.status(401).json({ ok: false, error: err.message });
