@@ -1,3 +1,4 @@
+import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import express from "express";
@@ -8,6 +9,32 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export function createApi() {
   const app = express();
+
+  // Raw UniversalAdmin client script for HttpGet + loadstring (rejoin auto-reexec).
+  // Tries public/ first, then repo-root UniversalAdmin.lua when the full monorepo is deployed.
+  app.get("/UniversalAdmin.lua", (_req, res) => {
+    const candidates = [
+      path.join(__dirname, "../public/UniversalAdmin.lua"),
+      path.join(__dirname, "../../UniversalAdmin.lua"),
+    ];
+    for (const p of candidates) {
+      try {
+        if (fs.existsSync(p)) {
+          res.type("text/plain; charset=utf-8");
+          return res.send(fs.readFileSync(p, "utf8"));
+        }
+      } catch {
+        // try next
+      }
+    }
+    res
+      .status(404)
+      .type("text/plain")
+      .send(
+        "-- UniversalAdmin.lua not found on server. Add it to public/UniversalAdmin.lua or deploy the repo with UniversalAdmin.lua next to discord-key-auth/.\n"
+      );
+  });
+
   app.use(express.static(path.join(__dirname, "../public")));
   app.use(express.json());
 
