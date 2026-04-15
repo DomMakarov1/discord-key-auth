@@ -8086,7 +8086,7 @@ end
     end
 end)()
 
-startLoginFlow()
+startLoginFlow();
 
 -- IIFE: main chunk is at Luau's ~200 local limit; `do` does not get a fresh register pool.
 (function()
