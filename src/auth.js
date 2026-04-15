@@ -279,6 +279,25 @@ export async function setTier(username, rank) {
   });
 }
 
+export async function deleteAccount(username) {
+  const user = await getUserByUsername(username);
+  await prisma.$transaction([
+    prisma.session.deleteMany({ where: { userId: user.id } }),
+    prisma.license.deleteMany({ where: { userId: user.id } }),
+    prisma.key.updateMany({
+      where: { assignedToId: user.id },
+      data: { assignedToId: null },
+    }),
+    prisma.key.updateMany({
+      where: { redeemedById: user.id },
+      data: { redeemedById: null },
+    }),
+    prisma.user.delete({ where: { id: user.id } }),
+  ]);
+  pendingClientCommands.delete(user.id);
+  return { username: user.username };
+}
+
 export async function scriptLoginWithPassword({ username, password }) {
   const user = await prisma.user.findUnique({ where: { username } });
   if (!user) throw new Error("Account does not exist");

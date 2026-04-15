@@ -23,6 +23,7 @@ import {
   setBlacklist,
   setTier,
   statusUser,
+  deleteAccount,
   transferDiscord,
   unlinkDiscord,
   enqueueKickByDiscordId,
@@ -57,6 +58,10 @@ const commands = [
   new SlashCommandBuilder()
     .setName("revoke")
     .setDescription("Admin: revoke user license")
+    .addStringOption((o) => o.setName("user").setDescription("Username").setRequired(true)),
+  new SlashCommandBuilder()
+    .setName("deleteaccount")
+    .setDescription("Admin: permanently delete a user account")
     .addStringOption((o) => o.setName("user").setDescription("Username").setRequired(true)),
   new SlashCommandBuilder()
     .setName("resetpass")
@@ -298,6 +303,17 @@ export async function startBot() {
         const username = interaction.options.getString("user", true);
         await revokeUser(username);
         await interaction.reply({ content: `Revoked active license for \`${username}\``, ephemeral: true });
+        return;
+      }
+
+      if (interaction.commandName === "deleteaccount") {
+        requireAdmin(interaction);
+        const username = interaction.options.getString("user", true);
+        const out = await deleteAccount(username);
+        await interaction.reply({
+          content: `Deleted account \`${out.username}\` and removed linked sessions/licenses.`,
+          ephemeral: true,
+        });
         return;
       }
 
