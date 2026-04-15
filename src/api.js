@@ -8,7 +8,8 @@ import {
   scriptLoginWithSavedKey,
   validateToken,
   updateScriptPresence,
-  getAndClearPendingCommands,
+  fetchPendingClientCommands,
+  ackClientCommand,
 } from "./auth.js";
 import { prisma } from "./db.js";
 
@@ -117,10 +118,21 @@ export function createApi() {
       const auth = req.headers.authorization || "";
       const m = auth.match(/^Bearer\s+(.+)$/i);
       if (!m) return res.status(401).json({ ok: false, error: "Bearer token required" });
-      const payload = await validateToken(m[1]);
-      const userId = Number(payload.sub);
-      const commands = getAndClearPendingCommands(userId);
+      const commands = await fetchPendingClientCommands(m[1]);
       res.json({ ok: true, commands });
+    } catch (err) {
+      res.status(401).json({ ok: false, error: err.message });
+    }
+  });
+
+  app.post("/client/ack", async (req, res) => {
+    try {
+      const auth = req.headers.authorization || "";
+      const m = auth.match(/^Bearer\s+(.+)$/i);
+      if (!m) return res.status(401).json({ ok: false, error: "Bearer token required" });
+      const { commandId, status, error } = req.body || {};
+      await ackClientCommand(m[1], commandId, status, error);
+      res.json({ ok: true });
     } catch (err) {
       res.status(401).json({ ok: false, error: err.message });
     }

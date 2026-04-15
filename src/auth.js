@@ -346,6 +346,7 @@ export async function setTier(username, rank) {
 export async function deleteAccount(username) {
   const user = await getUserByIdentity(username);
   await prisma.$transaction([
+    prisma.clientCommand.deleteMany({ where: { userId: user.id } }),
     prisma.session.deleteMany({ where: { userId: user.id } }),
     prisma.license.deleteMany({ where: { userId: user.id } }),
     prisma.key.updateMany({
@@ -358,7 +359,6 @@ export async function deleteAccount(username) {
     }),
     prisma.user.delete({ where: { id: user.id } }),
   ]);
-  pendingClientCommands.delete(user.id);
   return { username: user.username };
 }
 
@@ -451,16 +451,7 @@ export async function scriptLoginWithSavedKey({ username, keyCode }) {
   return { token, tier: activeLicense.tier, expiresAt: activeLicense.expiresAt, key: key.code };
 }
 
-// --- Remote admin: presence + pending commands for Discord /kick and /message ---
-
-const pendingClientCommands = new Map();
-let clientCommandSeq = 1;
-
-function pushCommand(userId, cmd) {
-  const list = pendingClientCommands.get(userId) || [];
-  list.push({ id: clientCommandSeq++, ...cmd });
-  pendingClientCommands.set(userId, list);
-}
+// --- Remote admin: persisted command queue + heartbeat diagnostics ---
 
 export async function updateScriptPresence(token, { robloxUserId, placeId, gameId }) {
   const payload = await validateToken(token);
@@ -480,10 +471,89 @@ export async function updateScriptPresence(token, { robloxUserId, placeId, gameI
   return { userId };
 }
 
-export function getAndClearPendingCommands(userId) {
-  const list = pendingClientCommands.get(userId);
-  pendingClientCommands.delete(userId);
-  return list || [];
+const COMMAND_TTL_MS = 5 * 60_000;
+const DELIVER_RETRY_MS = 15_000;
+const MAX_DELIVERY_ATTEMPTS = 60;
+
+async function enqueueClientCommand(userId, action, payload = null) {
+  return prisma.clientCommand.create({
+    data: {
+      userId,
+      action,
+      payload: payload || undefined,
+      expiresAt: new Date(Date.now() + COMMAND_TTL_MS),
+    },
+  });
+}
+
+export async function fetchPendingClientCommands(token) {
+  const payload = await validateToken(token);
+  const userId = Number(payload.sub);
+  const now = new Date();
+
+  await prisma.clientCommand.updateMany({
+    where: {
+      userId,
+      status: { in: ["pending", "delivered"] },
+      OR: [
+        { expiresAt: { lte: now } },
+        { attempts: { gte: MAX_DELIVERY_ATTEMPTS } },
+      ],
+    },
+    data: { status: "expired" },
+  });
+
+  const retryBefore = new Date(Date.now() - DELIVER_RETRY_MS);
+  const rows = await prisma.clientCommand.findMany({
+    where: {
+      userId,
+      status: { in: ["pending", "delivered"] },
+      expiresAt: { gt: now },
+      OR: [
+        { status: "pending" },
+        { status: "delivered", lastDeliveredAt: null },
+        { status: "delivered", lastDeliveredAt: { lte: retryBefore } },
+      ],
+    },
+    orderBy: { createdAt: "asc" },
+    take: 10,
+  });
+
+  if (rows.length > 0) {
+    const ids = rows.map((r) => r.id);
+    await prisma.clientCommand.updateMany({
+      where: { id: { in: ids } },
+      data: {
+        status: "delivered",
+        lastDeliveredAt: now,
+        attempts: { increment: 1 },
+      },
+    });
+  }
+
+  return rows.map((r) => ({
+    id: r.id,
+    action: r.action,
+    message: r.payload && typeof r.payload === "object" ? r.payload.message : undefined,
+  }));
+}
+
+export async function ackClientCommand(token, commandId, ackStatus = "ok", ackError = null) {
+  const payload = await validateToken(token);
+  const userId = Number(payload.sub);
+  const id = Number(commandId);
+  if (!Number.isFinite(id)) throw new Error("Invalid command id");
+  const cmd = await prisma.clientCommand.findUnique({ where: { id } });
+  if (!cmd || cmd.userId !== userId) throw new Error("Command not found");
+  await prisma.clientCommand.update({
+    where: { id },
+    data: {
+      status: "acknowledged",
+      acknowledgedAt: new Date(),
+      ackStatus: String(ackStatus || "ok").slice(0, 32),
+      ackError: ackError ? String(ackError).slice(0, 500) : null,
+    },
+  });
 }
 
 // Keep this generous so temporary network hiccups or brief executor stalls
@@ -511,8 +581,8 @@ async function assertUserInGameWithScript(userId) {
 export async function enqueueKickByDiscordId(discordId) {
   const user = await getUserByIdentity(discordId);
   await assertUserInGameWithScript(user.id);
-  pushCommand(user.id, { action: "kick" });
-  return { username: user.username };
+  const cmd = await enqueueClientCommand(user.id, "kick");
+  return { username: user.username, commandId: cmd.id };
 }
 
 export async function enqueueMessageByDiscordId(discordId, message) {
@@ -522,6 +592,34 @@ export async function enqueueMessageByDiscordId(discordId, message) {
 
   const user = await getUserByIdentity(discordId);
   await assertUserInGameWithScript(user.id);
-  pushCommand(user.id, { action: "message", message: text });
-  return { username: user.username };
+  const cmd = await enqueueClientCommand(user.id, "message", { message: text });
+  return { username: user.username, commandId: cmd.id };
+}
+
+export async function getPresenceStatusByIdentity(identity) {
+  const user = await getUserByIdentity(identity);
+  const latestSession = await prisma.session.findFirst({
+    where: { userId: user.id, endedAt: null, revoked: false },
+    orderBy: { lastSeenAt: "desc" },
+  });
+  const pending = await prisma.clientCommand.count({
+    where: { userId: user.id, status: { in: ["pending", "delivered"] }, expiresAt: { gt: new Date() } },
+  });
+  const lastAck = await prisma.clientCommand.findFirst({
+    where: { userId: user.id, status: "acknowledged" },
+    orderBy: { acknowledgedAt: "desc" },
+  });
+  const recentCutoff = new Date(Date.now() - PRESENCE_MAX_AGE_MS);
+  return {
+    username: user.username,
+    linkedDiscordId: user.discordId || null,
+    live: !!(latestSession && latestSession.lastSeenAt && latestSession.lastSeenAt >= recentCutoff),
+    lastSeenAt: latestSession?.lastSeenAt || null,
+    robloxUserId: latestSession?.robloxUserId || null,
+    placeId: latestSession?.robloxPlaceId || null,
+    pendingCommands: pending,
+    lastAckAt: lastAck?.acknowledgedAt || null,
+    lastAckStatus: lastAck?.ackStatus || null,
+    lastAckError: lastAck?.ackError || null,
+  };
 }

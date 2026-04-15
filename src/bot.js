@@ -28,6 +28,7 @@ import {
   unlinkDiscord,
   enqueueKickByDiscordId,
   enqueueMessageByDiscordId,
+  getPresenceStatusByIdentity,
 } from "./auth.js";
 
 const commands = [
@@ -176,6 +177,12 @@ const commands = [
     )
     .addStringOption((o) =>
       o.setName("target").setDescription("Script username or Discord id/mention").setRequired(false)
+    ),
+  new SlashCommandBuilder()
+    .setName("presence")
+    .setDescription("Admin: inspect script heartbeat/queue status")
+    .addStringOption((o) =>
+      o.setName("user").setDescription("Username or Discord @/id").setRequired(true)
     ),
   new SlashCommandBuilder()
     .setName("script")
@@ -495,7 +502,7 @@ export async function startBot() {
         if (!identity) throw new Error("Provide either user:@discord or target:<username|discord id>");
         const out = await enqueueKickByDiscordId(identity);
         await interaction.reply({
-          content: `Kick queued for **${out.username}** (next client poll, ~15s).`,
+          content: `Kick queued for **${out.username}** (command #${out.commandId}).`,
           ephemeral: true,
         });
         return;
@@ -510,7 +517,21 @@ export async function startBot() {
         const text = interaction.options.getString("text", true);
         const out = await enqueueMessageByDiscordId(identity, text);
         await interaction.reply({
-          content: `Message queued for **${out.username}** (shows on next poll).`,
+          content: `Message queued for **${out.username}** (command #${out.commandId}).`,
+          ephemeral: true,
+        });
+        return;
+      }
+
+      if (interaction.commandName === "presence") {
+        requireAdmin(interaction);
+        const identity = interaction.options.getString("user", true);
+        const p = await getPresenceStatusByIdentity(identity);
+        await interaction.reply({
+          content:
+            `user:\`${p.username}\` discord:\`${p.linkedDiscordId || "none"}\` live:${p.live}\n` +
+            `last_seen:${p.lastSeenAt ? new Date(p.lastSeenAt).toISOString() : "none"} roblox_user:${p.robloxUserId || "n/a"} place:${p.placeId || "n/a"}\n` +
+            `pending:${p.pendingCommands} last_ack:${p.lastAckAt ? new Date(p.lastAckAt).toISOString() : "none"} status:${p.lastAckStatus || "n/a"} err:${p.lastAckError || "n/a"}`,
           ephemeral: true,
         });
         return;

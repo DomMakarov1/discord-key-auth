@@ -20,6 +20,7 @@ model User {
   keysUsed      Key[]     @relation("KeyRedeemer")
   keysAssigned  Key[]     @relation("KeyAssignee")
   sessions      Session[]
+  clientCommands ClientCommand[]
 }
 
 model Key {
@@ -58,4 +59,22 @@ model Session {
   robloxPlaceId  String?
   lastSeenAt     DateTime?
   user           User     @relation(fields: [userId], references: [id])
+}
+
+model ClientCommand {
+  id             Int      @id @default(autoincrement())
+  userId         Int
+  action         String
+  payload        Json?
+  status         String   @default("pending") // pending, delivered, acknowledged, expired
+  attempts       Int      @default(0)
+  lastDeliveredAt DateTime?
+  acknowledgedAt DateTime?
+  ackStatus      String?
+  ackError       String?
+  createdAt      DateTime @default(now())
+  expiresAt      DateTime
+  user           User     @relation(fields: [userId], references: [id])
+
+  @@index([userId, status, createdAt])
 }
