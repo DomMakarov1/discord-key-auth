@@ -28,6 +28,8 @@ import {
   unlinkDiscord,
   enqueueKickByDiscordId,
   enqueueMessageByDiscordId,
+  enqueueWarnByIdentity,
+  listWarningsByIdentity,
   getPresenceStatusByIdentity,
 } from "./auth.js";
 
@@ -171,6 +173,27 @@ const commands = [
     )
     .addStringOption((o) =>
       o.setName("target").setDescription("Script username or Discord @mention/id").setRequired(true)
+    )
+    .addBooleanOption((o) =>
+      o.setName("anonymous").setDescription("Hide sender identity (default true)").setRequired(false)
+    ),
+  new SlashCommandBuilder()
+    .setName("warn")
+    .setDescription("Admin: issue a warning popup to a user")
+    .addStringOption((o) =>
+      o.setName("text").setDescription("Warning text").setRequired(true).setMaxLength(500)
+    )
+    .addStringOption((o) =>
+      o.setName("target").setDescription("Script username or Discord @mention/id").setRequired(true)
+    )
+    .addBooleanOption((o) =>
+      o.setName("anonymous").setDescription("Hide sender identity (default true)").setRequired(false)
+    ),
+  new SlashCommandBuilder()
+    .setName("warnlist")
+    .setDescription("Admin: list warnings for a user")
+    .addStringOption((o) =>
+      o.setName("user").setDescription("Username or Discord @/id").setRequired(true)
     ),
   new SlashCommandBuilder()
     .setName("presence")
@@ -505,9 +528,49 @@ export async function startBot() {
         const targetText = interaction.options.getString("target");
         const identity = targetText;
         const text = interaction.options.getString("text", true);
-        const out = await enqueueMessageByDiscordId(identity, text);
+        const anonymous = interaction.options.getBoolean("anonymous");
+        const out = await enqueueMessageByDiscordId(identity, text, {
+          anonymous: anonymous !== false,
+          senderName: interaction.user.username,
+          issuedByDiscordId: interaction.user.id,
+        });
         await interaction.reply({
           content: `Message queued for **${out.username}** (command #${out.commandId}).`,
+          ephemeral: true,
+        });
+        return;
+      }
+
+      if (interaction.commandName === "warn") {
+        requireAdmin(interaction);
+        const targetText = interaction.options.getString("target");
+        const text = interaction.options.getString("text", true);
+        const anonymous = interaction.options.getBoolean("anonymous");
+        const out = await enqueueWarnByIdentity(targetText, text, {
+          anonymous: anonymous !== false,
+          senderName: interaction.user.username,
+          issuedByDiscordId: interaction.user.id,
+        });
+        await interaction.reply({
+          content: `Warning queued for **${out.username}** (warning #${out.warningId}, command #${out.commandId}).`,
+          ephemeral: true,
+        });
+        return;
+      }
+
+      if (interaction.commandName === "warnlist") {
+        requireAdmin(interaction);
+        const identity = interaction.options.getString("user", true);
+        const out = await listWarningsByIdentity(identity);
+        if (!out.warnings.length) {
+          await interaction.reply({ content: `No warnings for \`${out.username}\`.`, ephemeral: true });
+          return;
+        }
+        const lines = out.warnings.slice(0, 25).map((w) =>
+          `#${w.id} · ${new Date(w.createdAt).toISOString()} · by:${w.issuedByName || w.issuedByDiscordId || "anonymous"}\n${w.message}`
+        );
+        await interaction.reply({
+          content: `Warnings for \`${out.username}\`:\n` + lines.join("\n\n"),
           ephemeral: true,
         });
         return;

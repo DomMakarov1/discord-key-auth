@@ -21,6 +21,7 @@ model User {
   keysAssigned  Key[]     @relation("KeyAssignee")
   sessions      Session[]
   clientCommands ClientCommand[]
+  warnings      Warning[]
 }
 
 model Key {
@@ -77,4 +78,16 @@ model ClientCommand {
   user           User     @relation(fields: [userId], references: [id])
 
   @@index([userId, status, createdAt])
+}
+
+model Warning {
+  id               Int      @id @default(autoincrement())
+  userId           Int
+  message          String
+  issuedByDiscordId String?
+  issuedByName     String?
+  createdAt        DateTime @default(now())
+  user             User     @relation(fields: [userId], references: [id])
+
+  @@index([userId, createdAt])
 }

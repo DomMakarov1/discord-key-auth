@@ -346,6 +346,7 @@ export async function setTier(username, rank) {
 export async function deleteAccount(username) {
   const user = await getUserByIdentity(username);
   await prisma.$transaction([
+    prisma.warning.deleteMany({ where: { userId: user.id } }),
     prisma.clientCommand.deleteMany({ where: { userId: user.id } }),
     prisma.session.deleteMany({ where: { userId: user.id } }),
     prisma.license.deleteMany({ where: { userId: user.id } }),
@@ -534,7 +535,7 @@ export async function fetchPendingClientCommands(token) {
   return rows.map((r) => ({
     id: r.id,
     action: r.action,
-    message: r.payload && typeof r.payload === "object" ? r.payload.message : undefined,
+    payload: r.payload && typeof r.payload === "object" ? r.payload : null,
   }));
 }
 
@@ -585,15 +586,60 @@ export async function enqueueKickByDiscordId(discordId) {
   return { username: user.username, commandId: cmd.id };
 }
 
-export async function enqueueMessageByDiscordId(discordId, message) {
+export async function enqueueMessageByDiscordId(discordId, message, options = {}) {
   const text = (message || "").trim();
   if (!text) throw new Error("Message required");
   if (text.length > 500) throw new Error("Message too long (max 500)");
 
   const user = await getUserByIdentity(discordId);
   await assertUserInGameWithScript(user.id);
-  const cmd = await enqueueClientCommand(user.id, "message", { message: text });
+  const senderName = String(options.senderName || "").trim();
+  const anonymous = options.anonymous !== false;
+  const cmd = await enqueueClientCommand(user.id, "message", {
+    title: "Message received",
+    body: text,
+    sender: anonymous ? null : (senderName || "Unknown sender"),
+    accent: "primary",
+    autoCloseSec: 15,
+  });
   return { username: user.username, commandId: cmd.id };
+}
+
+export async function enqueueWarnByIdentity(identity, message, options = {}) {
+  const text = (message || "").trim();
+  if (!text) throw new Error("Warning message required");
+  if (text.length > 500) throw new Error("Warning too long (max 500)");
+  const user = await getUserByIdentity(identity);
+  await assertUserInGameWithScript(user.id);
+  const senderName = String(options.senderName || "").trim();
+  const anonymous = options.anonymous !== false;
+  const warning = await prisma.warning.create({
+    data: {
+      userId: user.id,
+      message: text,
+      issuedByDiscordId: options.issuedByDiscordId ? String(options.issuedByDiscordId) : null,
+      issuedByName: anonymous ? null : (senderName || null),
+    },
+  });
+  const cmd = await enqueueClientCommand(user.id, "warn", {
+    title: "Warning Issued",
+    body: text,
+    sender: anonymous ? null : (senderName || "Unknown sender"),
+    accent: "danger",
+    autoCloseSec: 15,
+    warningId: warning.id,
+  });
+  return { username: user.username, commandId: cmd.id, warningId: warning.id };
+}
+
+export async function listWarningsByIdentity(identity) {
+  const user = await getUserByIdentity(identity);
+  const warnings = await prisma.warning.findMany({
+    where: { userId: user.id },
+    orderBy: { createdAt: "desc" },
+    take: 50,
+  });
+  return { username: user.username, warnings };
 }
 
 export async function getPresenceStatusByIdentity(identity) {
