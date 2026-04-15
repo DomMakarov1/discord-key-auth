@@ -162,14 +162,14 @@ const commands = [
   new SlashCommandBuilder()
     .setName("message")
     .setDescription("Admin: message user by Discord @/id or script username")
+    .addStringOption((o) =>
+      o.setName("text").setDescription("Message text").setRequired(true).setMaxLength(500)
+    )
     .addUserOption((o) =>
       o.setName("user").setDescription("Discord user target").setRequired(false)
     )
     .addStringOption((o) =>
       o.setName("target").setDescription("Script username or Discord id/mention").setRequired(false)
-    )
-    .addStringOption((o) =>
-      o.setName("text").setDescription("Message text").setRequired(true).setMaxLength(500)
     ),
   new SlashCommandBuilder()
     .setName("script")
