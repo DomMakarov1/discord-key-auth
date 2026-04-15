@@ -422,7 +422,9 @@ export function getAndClearPendingCommands(userId) {
   return list || [];
 }
 
-const PRESENCE_MAX_AGE_MS = 90_000;
+// Keep this generous so temporary network hiccups or brief executor stalls
+// don't cause false "not live" failures for /kick and /message.
+const PRESENCE_MAX_AGE_MS = 15 * 60_000;
 
 async function assertUserInGameWithScript(userId) {
   const cutoff = new Date(Date.now() - PRESENCE_MAX_AGE_MS);
@@ -432,13 +434,12 @@ async function assertUserInGameWithScript(userId) {
       endedAt: null,
       revoked: false,
       lastSeenAt: { gte: cutoff },
-      robloxUserId: { not: null },
     },
     orderBy: { lastSeenAt: "desc" },
   });
   if (!session) {
     throw new Error(
-      "No live UniversalAdmin session with Roblox presence (user must be in-game with the script; wait ~15s after load)"
+      "No recent UniversalAdmin heartbeat for that user (ask them to re-run latest script and wait ~20s)"
     );
   }
 }
