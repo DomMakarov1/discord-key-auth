@@ -62,6 +62,7 @@ local CoreGui        = game:GetService("CoreGui")
 local RunService     = game:GetService("RunService")
 local SoundService   = game:GetService("SoundService")
 local TeleportService = game:GetService("TeleportService")
+local MarketplaceService = game:GetService("MarketplaceService")
 
 local LocalPlayer = Players.LocalPlayer
 
@@ -107,6 +108,7 @@ local persistedConfig = {
     accentPrimary = nil,  -- {r,g,b}
     accentSecondary = nil,
     customCommands = {},  -- { { name = "foo", source = "..." }, ... }
+    recentCommands = {}, -- most recent executed commands (for ;recent)
     flyHotkey     = nil,
     noclipHotkey  = nil,
     clickFlingBind = nil,
@@ -368,6 +370,16 @@ Commands["playerlist"] = {
     Execute = function() end,
 }
 
+Commands["inventory"] = {
+    Name = "inventory",
+    Aliases = {"inv", "wearing", "outfit"},
+    Description = "View a player's worn items and open/copy marketplace links",
+    Args = {"player"},
+    PlayerArg = 1,
+    Local = true,
+    Execute = function() end,
+}
+
 Commands["fling"] = {
     Name = "fling",
     Aliases = {},
@@ -478,6 +490,15 @@ Commands["settings"] = {
     Name = "settings",
     Aliases = {"config", "options"},
     Description = "Open the settings panel",
+    Args = {},
+    Local = true,
+    Execute = function() end,
+}
+
+Commands["recent"] = {
+    Name = "recent",
+    Aliases = {"history", "last"},
+    Description = "Show your recently executed commands",
     Args = {},
     Local = true,
     Execute = function() end,
@@ -682,6 +703,17 @@ local function executeCommand(input)
     end
 
     if cmd then
+        local normalizedInput = tostring(input or "")
+        if normalizedInput ~= "" then
+            persistedConfig.recentCommands = persistedConfig.recentCommands or {}
+            table.insert(persistedConfig.recentCommands, 1, normalizedInput)
+            if #persistedConfig.recentCommands > 20 then
+                for i = #persistedConfig.recentCommands, 21, -1 do
+                    table.remove(persistedConfig.recentCommands, i)
+                end
+            end
+            savePersistedConfig()
+        end
         local ok, err = pcall(cmd.Execute, parts)
         if not ok then
             return false, "Error: " .. tostring(err)
@@ -4490,6 +4522,20 @@ Commands["copy"].Execute = function(args)
     notify("Copied " .. #text .. " chars to clipboard", "success", 2)
 end
 
+Commands["recent"].Execute = function()
+    local recents = persistedConfig.recentCommands or {}
+    if #recents == 0 then
+        notify("No recent commands yet", "info", 2)
+        return
+    end
+    local maxShow = math.min(8, #recents)
+    local lines = {}
+    for i = 1, maxShow do
+        lines[#lines + 1] = tostring(i) .. ". " .. tostring(recents[i])
+    end
+    notify("Recent commands:\n" .. table.concat(lines, "\n"), "info", 6)
+end
+
 -------------------------------------------------
 -- TOGGLE STATE REGISTRY
 -- Each toggleable command publishes its on/off state here so the
@@ -6198,6 +6244,280 @@ Commands["playerlist"].Execute = function()
 end
 
 -------------------------------------------------
+-- INVENTORY PANEL
+-------------------------------------------------
+(function()
+    local inventoryPanel = createToolPanel({
+        Name = "InventoryPanel",
+        Title = "Inventory",
+        Width = 560,
+        Height = 380,
+        Position = UDim2.new(0.5, -280, 0.5, -190),
+    })
+
+    local left = create("Frame", {
+        Size = UDim2.new(0.62, -8, 1, 0),
+        BackgroundTransparency = 1,
+        Parent = inventoryPanel.Content,
+    })
+    local right = create("Frame", {
+        Size = UDim2.new(0.38, -4, 1, 0),
+        Position = UDim2.new(0.62, 8, 0, 0),
+        BackgroundTransparency = 1,
+        Parent = inventoryPanel.Content,
+    })
+
+    local invList = create("ScrollingFrame", {
+        Size = UDim2.new(1, 0, 1, 0),
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        ScrollBarThickness = 3,
+        ScrollBarImageColor3 = Theme.AccentPrimary,
+        CanvasSize = UDim2.new(0, 0, 0, 0),
+        AutomaticCanvasSize = Enum.AutomaticSize.Y,
+        Parent = left,
+    }, {
+        create("UIListLayout", {
+            SortOrder = Enum.SortOrder.LayoutOrder,
+            Padding = UDim.new(0, 6),
+        }),
+    })
+
+    local invAvatar = create("ImageLabel", {
+        Size = UDim2.new(1, -12, 0, 190),
+        Position = UDim2.new(0, 6, 0, 0),
+        BackgroundColor3 = Theme.Surface,
+        BackgroundTransparency = 0.15,
+        BorderSizePixel = 0,
+        Image = "",
+        Parent = right,
+    }, {
+        create("UICorner", { CornerRadius = UDim.new(0, 10) }),
+        create("UIStroke", {
+            Color = Theme.Border,
+            Thickness = 1,
+            Transparency = 0.35,
+        }),
+    })
+
+    local invName = create("TextLabel", {
+        Size = UDim2.new(1, -12, 0, 22),
+        Position = UDim2.new(0, 6, 0, 198),
+        BackgroundTransparency = 1,
+        Text = "",
+        TextColor3 = Theme.Text,
+        TextSize = 14,
+        Font = Theme.FontBold,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Parent = right,
+    })
+
+    local invHint = create("TextLabel", {
+        Size = UDim2.new(1, -12, 0, 52),
+        Position = UDim2.new(0, 6, 0, 224),
+        BackgroundTransparency = 1,
+        Text = "Click an item to open marketplace.\nIf browser is unavailable, link is copied.",
+        TextColor3 = Theme.TextMuted,
+        TextSize = 11,
+        Font = Theme.Font,
+        TextWrapped = true,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        TextYAlignment = Enum.TextYAlignment.Top,
+        Parent = right,
+    })
+
+    local invNameCache = {}
+
+    local function clearInventoryRows()
+        for _, c in ipairs(invList:GetChildren()) do
+            if c:IsA("TextButton") or c:IsA("TextLabel") then
+                c:Destroy()
+            end
+        end
+    end
+
+    local function splitCsvIds(csv)
+        local out = {}
+        if type(csv) ~= "string" or csv == "" then
+            return out
+        end
+        for token in csv:gmatch("[^,]+") do
+            local id = tonumber(token)
+            if id and id > 0 then
+                table.insert(out, id)
+            end
+        end
+        return out
+    end
+
+    local function itemNameFromId(id)
+        if invNameCache[id] then
+            return invNameCache[id]
+        end
+        local name = "Asset " .. tostring(id)
+        local ok, info = pcall(function()
+            return MarketplaceService:GetProductInfo(id)
+        end)
+        if ok and type(info) == "table" and type(info.Name) == "string" and info.Name ~= "" then
+            name = info.Name
+        end
+        invNameCache[id] = name
+        return name
+    end
+
+    local function openCatalogAsset(id)
+        local url = "https://www.roblox.com/catalog/" .. tostring(id)
+        local opened = false
+        pcall(function()
+            local gs = game:GetService("GuiService")
+            if gs.OpenBrowserWindow then
+                gs:OpenBrowserWindow(url)
+                opened = true
+            end
+        end)
+        if not opened then
+            local clip = (setclipboard or (syn and syn.write_clipboard) or (toclipboard) or (writeclipboard))
+            if type(clip) == "function" then
+                pcall(function() clip(url) end)
+                notify("Marketplace link copied to clipboard", "info", 3)
+                return
+            end
+            notify(url, "info", 4)
+            return
+        end
+        notify("Opening marketplace item...", "info", 2)
+    end
+
+    local function buildItemsFromDescription(desc)
+        local items = {}
+        local function pushId(id, kind)
+            id = tonumber(id)
+            if id and id > 0 then
+                table.insert(items, { id = id, kind = kind or "Item" })
+            end
+        end
+        local function pushCsv(field, kind)
+            for _, id in ipairs(splitCsvIds(desc[field])) do
+                pushId(id, kind)
+            end
+        end
+        pushId(desc.Shirt, "Shirt")
+        pushId(desc.Pants, "Pants")
+        pushId(desc.GraphicTShirt, "T-Shirt")
+        pushId(desc.Face, "Face")
+        pushCsv("HatAccessory", "Hat")
+        pushCsv("HairAccessory", "Hair")
+        pushCsv("FaceAccessory", "Face Accessory")
+        pushCsv("NeckAccessory", "Neck Accessory")
+        pushCsv("ShoulderAccessory", "Shoulder Accessory")
+        pushCsv("FrontAccessory", "Front Accessory")
+        pushCsv("BackAccessory", "Back Accessory")
+        pushCsv("WaistAccessory", "Waist Accessory")
+        return items
+    end
+
+    local function getDescriptionForPlayer(player)
+        local okDesc, desc = pcall(function()
+            if player == LocalPlayer and player.Character then
+                local hum = player.Character:FindFirstChildOfClass("Humanoid")
+                if hum then
+                    return hum:GetAppliedDescription()
+                end
+            end
+            return Players:GetHumanoidDescriptionFromUserId(player.UserId)
+        end)
+        if okDesc then
+            return desc
+        end
+        return nil
+    end
+
+    local function showInventoryForPlayer(player)
+        clearInventoryRows()
+        invAvatar.Image = "rbxthumb://type=AvatarHeadShot&id=" .. tostring(player.UserId) .. "&w=420&h=420"
+        invName.Text = player.DisplayName .. "  (@" .. player.Name .. ")"
+
+        local desc = getDescriptionForPlayer(player)
+        if not desc then
+            create("TextLabel", {
+                Size = UDim2.new(1, -8, 0, 40),
+                BackgroundTransparency = 1,
+                Text = "Could not load inventory details.",
+                TextColor3 = Theme.Error,
+                TextSize = 12,
+                Font = Theme.Font,
+                TextWrapped = true,
+                Parent = invList,
+            })
+            return
+        end
+
+        local items = buildItemsFromDescription(desc)
+        if #items == 0 then
+            create("TextLabel", {
+                Size = UDim2.new(1, -8, 0, 40),
+                BackgroundTransparency = 1,
+                Text = "No wearable items found.",
+                TextColor3 = Theme.TextMuted,
+                TextSize = 12,
+                Font = Theme.Font,
+                Parent = invList,
+            })
+            return
+        end
+
+        for i, item in ipairs(items) do
+            local btn = create("TextButton", {
+                Name = "InvItem_" .. tostring(item.id),
+                Size = UDim2.new(1, -4, 0, 30),
+                LayoutOrder = i,
+                BackgroundColor3 = Theme.Surface,
+                BackgroundTransparency = 0.2,
+                BorderSizePixel = 0,
+                AutoButtonColor = false,
+                Text = "[" .. item.kind .. "] " .. itemNameFromId(item.id) .. "  (#" .. tostring(item.id) .. ")",
+                TextColor3 = Theme.Text,
+                TextSize = 11,
+                Font = Theme.Font,
+                TextXAlignment = Enum.TextXAlignment.Left,
+                Parent = invList,
+            }, {
+                create("UICorner", { CornerRadius = UDim.new(0, 6) }),
+                create("UIPadding", {
+                    PaddingLeft = UDim.new(0, 8),
+                    PaddingRight = UDim.new(0, 6),
+                }),
+            })
+            btn.MouseEnter:Connect(function()
+                tween(btn, quickTween, { BackgroundTransparency = 0 })
+            end)
+            btn.MouseLeave:Connect(function()
+                tween(btn, quickTween, { BackgroundTransparency = 0.2 })
+            end)
+            btn.MouseButton1Click:Connect(function()
+                playClickSound()
+                openCatalogAsset(item.id)
+            end)
+        end
+    end
+
+    Commands["inventory"].Execute = function(args)
+        local target = LocalPlayer
+        if args and args[1] then
+            local resolved = resolvePlayerList(args[1], { excludeSelf = false })
+            if #resolved == 0 then
+                error("Player not found: " .. tostring(args[1]))
+            end
+            target = resolved[1]
+        end
+        showInventoryForPlayer(target)
+        if not inventoryPanel.IsOpen() then
+            inventoryPanel.Show()
+        end
+    end
+end)()
+
+-------------------------------------------------
 -- UA USER NAMETAGS
 -- Rendered as BillboardGuis parented to each target's Head with
 -- AlwaysOnTop so they draw above all other BillboardGuis in the world,
@@ -6208,6 +6528,7 @@ end
 -- replication is FE-dependent).
 -------------------------------------------------
 local nametagState = { tags = {} }
+local uaKnownPresent = {}
 
 local function removeNametag(player)
     local tag = nametagState.tags[player]
@@ -6373,10 +6694,15 @@ local function refreshNametags()
             if not nametagState.tags[player] and player.Character then
                 applyNametag(player)
             end
+            if player ~= LocalPlayer and not uaKnownPresent[player.UserId] then
+                uaKnownPresent[player.UserId] = true
+                notify(player.DisplayName .. " is using UniversalAdmin in this server", "info", 4)
+            end
         else
             if nametagState.tags[player] then
                 removeNametag(player)
             end
+            uaKnownPresent[player.UserId] = nil
         end
     end
 end
@@ -6402,6 +6728,12 @@ local function watchPlayer(player)
 end
 
 for _, p in ipairs(Players:GetPlayers()) do
+    if p ~= LocalPlayer and isScriptUser(p) then
+        uaKnownPresent[p.UserId] = true
+    end
+end
+
+for _, p in ipairs(Players:GetPlayers()) do
     task.spawn(watchPlayer, p)
 end
 
@@ -6411,6 +6743,7 @@ end)
 
 Players.PlayerRemoving:Connect(function(p)
     removeNametag(p)
+    uaKnownPresent[p.UserId] = nil
 end)
 
 -- Respawn handler: clean up fly/noclip on death
