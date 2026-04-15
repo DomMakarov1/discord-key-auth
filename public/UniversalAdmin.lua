@@ -116,6 +116,8 @@ local persistedConfig = {
     topBarPos     = nil,  -- { xScale, xOffset, yScale, yOffset }
     loginUser     = nil,  -- username string; when set, skip login & show "Welcome back"
     loginKey      = nil,  -- script auth key tied to loginUser
+    authToken     = nil,  -- JWT from script-login (Discord /kick, /message, presence)
+    scriptFingerprint = nil, -- remote script ETag/Last-Modified snapshot for update notices
     accountTier   = nil,  -- API tier string (e.g. Member); shown as "Standard User" in UI
     hotkeyAlwaysActive = {},  -- { fly = true, noclip = true, ... }
 }
@@ -7240,6 +7242,7 @@ local DISCORD_INVITE = (getgenv and type(getgenv().UA_DiscordInvite) == "string"
 local function clearSavedLogin()
     persistedConfig.loginUser = nil
     persistedConfig.loginKey = nil
+    persistedConfig.authToken = nil
     persistedConfig.accountTier = nil
     savePersistedConfig()
 end
@@ -7283,6 +7286,298 @@ local function postJson(url, bodyTable)
         return nil, "Invalid auth response"
     end
     return parsed, nil
+end
+
+-- Bearer JSON request (POST with body or GET without) for /client/presence and /client/commands
+local function authHttpJson(method, url, token, bodyTable)
+    local req = getRequestFn()
+    if not req then
+        return nil, "No supported HTTP request function in executor"
+    end
+    local headers = { Authorization = "Bearer " .. token }
+    if bodyTable ~= nil then
+        headers["Content-Type"] = "application/json"
+    end
+    local args = { Url = url, Method = method, Headers = headers }
+    if bodyTable ~= nil then
+        args.Body = HttpService:JSONEncode(bodyTable)
+    end
+    local ok, res = pcall(function()
+        return req(args)
+    end)
+    if not ok or not res then
+        return nil, "HTTP request failed"
+    end
+    if tonumber(res.StatusCode) ~= 200 then
+        return nil, "HTTP " .. tostring(res.StatusCode or "?")
+    end
+    local parsed
+    local okDecode = pcall(function() parsed = HttpService:JSONDecode(res.Body or "{}") end)
+    if not okDecode or type(parsed) ~= "table" then
+        return nil, "Invalid JSON"
+    end
+    return parsed, nil
+end
+
+local remoteAdminBridgeStarted = false
+local updateWatcherStarted = false
+
+local function getLoaderUrlForUpdateCheck()
+    if type(CONFIG.LoaderUrl) == "string" and CONFIG.LoaderUrl ~= "" then
+        return CONFIG.LoaderUrl
+    end
+    if getgenv then
+        local g = getgenv().UA_LoaderUrl
+        if type(g) == "string" and g ~= "" then
+            return g
+        end
+    end
+    return AUTH_API_BASE .. "/UniversalAdmin.lua"
+end
+
+local function fetchRemoteScriptFingerprint()
+    local req = getRequestFn()
+    if not req then
+        return nil
+    end
+    local loaderUrl = getLoaderUrlForUpdateCheck()
+    local ok, res = pcall(function()
+        return req({
+            Url = loaderUrl,
+            Method = "GET",
+        })
+    end)
+    if not ok or not res or tonumber(res.StatusCode) ~= 200 then
+        return nil
+    end
+    local headers = res.Headers or {}
+    local fp = headers.ETag or headers.Etag or headers["Last-Modified"] or headers["last-modified"]
+    if type(fp) ~= "string" or fp == "" then
+        fp = tostring(#tostring(res.Body or ""))
+    end
+    return fp
+end
+
+local function checkForScriptUpdate()
+    local fp = fetchRemoteScriptFingerprint()
+    if not fp or fp == "" then
+        return
+    end
+    local prev = persistedConfig.scriptFingerprint
+    if type(prev) == "string" and prev ~= "" and prev ~= fp then
+        notify("New update - will be applied next execute", "info", 6)
+    end
+    if prev ~= fp then
+        persistedConfig.scriptFingerprint = fp
+        savePersistedConfig()
+    end
+end
+
+local function showCenterAdminMessage(text, duration)
+    local msg = tostring(text or "")
+    if msg == "" then
+        return
+    end
+    duration = tonumber(duration) or 5
+    local existing = CoreGui:FindFirstChild("UniversalAdmin_RemoteMessage")
+    if existing then
+        pcall(function() existing:Destroy() end)
+    end
+    local sg = Instance.new("ScreenGui")
+    sg.Name = "UniversalAdmin_RemoteMessage"
+    sg.ResetOnSpawn = false
+    sg.IgnoreGuiInset = true
+    sg.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    sg.DisplayOrder = 2000000100
+    sg.Parent = CoreGui
+
+    local box = Instance.new("Frame")
+    box.AnchorPoint = Vector2.new(0.5, 0.5)
+    box.Position = UDim2.new(0.5, 0, 0.5, 0)
+    box.Size = UDim2.new(0, 520, 0, 0)
+    box.BackgroundColor3 = Theme.Surface
+    box.BackgroundTransparency = 0.05
+    box.BorderSizePixel = 0
+    box.Parent = sg
+    local bc = Instance.new("UICorner")
+    bc.CornerRadius = UDim.new(0, 12)
+    bc.Parent = box
+    local bs = Instance.new("UIStroke")
+    bs.Color = Theme.AccentPrimary
+    bs.Thickness = 1.5
+    bs.Transparency = 0.25
+    bs.Parent = box
+
+    local lbl = Instance.new("TextLabel")
+    lbl.AnchorPoint = Vector2.new(0.5, 0.5)
+    lbl.Position = UDim2.new(0.5, 0, 0.5, 0)
+    lbl.Size = UDim2.new(1, -28, 1, -20)
+    lbl.BackgroundTransparency = 1
+    lbl.Text = msg
+    lbl.TextWrapped = true
+    lbl.TextXAlignment = Enum.TextXAlignment.Center
+    lbl.TextYAlignment = Enum.TextYAlignment.Center
+    lbl.TextColor3 = Theme.Text
+    lbl.TextSize = 18
+    lbl.Font = Theme.FontBold
+    lbl.Parent = box
+
+    tween(box, TweenInfo.new(0.2, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), { Size = UDim2.new(0, 520, 0, 120) })
+    task.delay(duration, function()
+        local out = TweenInfo.new(0.2, Enum.EasingStyle.Quint, Enum.EasingDirection.In)
+        tween(box, out, { Size = UDim2.new(0, 520, 0, 0), BackgroundTransparency = 1 })
+        tween(lbl, out, { TextTransparency = 1 })
+        task.delay(0.22, function()
+            if sg and sg.Parent then
+                sg:Destroy()
+            end
+        end)
+    end)
+end
+
+local function startUpdateWatcher()
+    if updateWatcherStarted then
+        return
+    end
+    updateWatcherStarted = true
+    task.spawn(function()
+        task.wait(4)
+        while true do
+            pcall(function()
+                checkForScriptUpdate()
+            end)
+            task.wait(120)
+        end
+    end)
+end
+
+local function refreshAuthTokenViaSavedKey()
+    if type(persistedConfig.loginUser) ~= "string" or persistedConfig.loginUser == "" then
+        return false
+    end
+    if type(persistedConfig.loginKey) ~= "string" or persistedConfig.loginKey == "" then
+        return false
+    end
+    local data, err = postJson(AUTH_API_BASE .. "/auth/script-login-key", {
+        username = persistedConfig.loginUser,
+        key = persistedConfig.loginKey,
+    })
+    if data and data.ok == true and type(data.token) == "string" and data.token ~= "" then
+        persistedConfig.authToken = data.token
+        if data.tier then
+            persistedConfig.accountTier = data.tier
+        end
+        savePersistedConfig()
+        return true
+    end
+    return false
+end
+
+local function ackRemoteCommand(tok, cmdId, okAck, errText)
+    if type(cmdId) ~= "number" then
+        return
+    end
+    authHttpJson("POST", AUTH_API_BASE .. "/client/ack", tok, {
+        token = tok,
+        commandId = cmdId,
+        status = okAck and "ok" or "error",
+        error = errText and tostring(errText) or nil,
+    })
+end
+
+local function remoteAdminBridgeTick(tok)
+    local base = AUTH_API_BASE
+    local data, err = authHttpJson("POST", base .. "/client/commands", tok, { token = tok })
+    if err and string.find(err, "HTTP 401", 1, true) then
+        if refreshAuthTokenViaSavedKey() then
+            tok = persistedConfig.authToken
+            data, err = authHttpJson("POST", base .. "/client/commands", tok, { token = tok })
+        else
+            return
+        end
+    end
+    if err or not data or type(data.commands) ~= "table" then
+        return
+    end
+    for _, cmd in ipairs(data.commands) do
+        if type(cmd) == "table" then
+            local cmdId = tonumber(cmd.id)
+            if cmd.action == "kick" then
+                ackRemoteCommand(tok, cmdId, true, nil)
+                LocalPlayer:Kick("Removed by Universal Admin (Discord)")
+                return
+            elseif cmd.action == "message" and type(cmd.message) == "string" then
+                local okShow, showErr = pcall(function()
+                    showCenterAdminMessage(cmd.message, 6)
+                end)
+                ackRemoteCommand(tok, cmdId, okShow, okShow and nil or showErr)
+            else
+                ackRemoteCommand(tok, cmdId, false, "unknown action")
+            end
+        end
+    end
+end
+
+local function startRemoteAdminBridge()
+    if remoteAdminBridgeStarted then
+        return
+    end
+    if type(persistedConfig.authToken) ~= "string" or persistedConfig.authToken == "" then
+        if not refreshAuthTokenViaSavedKey() then
+            return
+        end
+    end
+    remoteAdminBridgeStarted = true
+    task.spawn(function()
+        task.wait(2)
+        local lastPresenceAt = 0
+        local lastCommandsAt = 0
+        local lastTokenRefreshAt = os.clock()
+        while true do
+            local tok = persistedConfig.authToken
+            if type(tok) ~= "string" or tok == "" then
+                pcall(function()
+                    refreshAuthTokenViaSavedKey()
+                end)
+                tok = persistedConfig.authToken
+            end
+            if type(tok) ~= "string" or tok == "" then
+                task.wait(10)
+                continue
+            end
+            local now = os.clock()
+            if now - lastTokenRefreshAt >= (45 * 60) then
+                pcall(function()
+                    if refreshAuthTokenViaSavedKey() then
+                        lastTokenRefreshAt = now
+                    end
+                end)
+                tok = persistedConfig.authToken
+            end
+            if now - lastPresenceAt >= 10 then
+                pcall(function()
+                    local _, pErr = authHttpJson("POST", AUTH_API_BASE .. "/client/presence", tok, {
+                        token = tok,
+                        robloxUserId = tostring(LocalPlayer.UserId),
+                        placeId = tostring(game.PlaceId),
+                        gameId = tostring(game.GameId),
+                    })
+                    if pErr and string.find(pErr, "HTTP 401", 1, true) then
+                        refreshAuthTokenViaSavedKey()
+                    end
+                end)
+                lastPresenceAt = now
+            end
+            if now - lastCommandsAt >= 6 then
+                pcall(function()
+                    remoteAdminBridgeTick(tok)
+                end)
+                lastCommandsAt = now
+            end
+            task.wait(2)
+        end
+        remoteAdminBridgeStarted = false
+    end)
 end
 
 local function scriptAuthLogin(username, password)
@@ -7783,6 +8078,9 @@ local function loginRunAuthRequest(L, onSuccess, user, pass)
     persistedConfig.loginUser = user
     persistedConfig.loginKey = tostring(authResult.key or "")
     persistedConfig.accountTier = authResult.tier or "Member"
+    if type(authResult.token) == "string" and authResult.token ~= "" then
+        persistedConfig.authToken = authResult.token
+    end
     if persistedConfig.loginKey == "" then
         clearSavedLogin()
         L.submitted = false
@@ -7960,6 +8258,9 @@ local function revealMainUI(username)
             notify("Press " .. CONFIG.Prefix .. " to open command palette", "info", 5)
         end)
     end)
+
+    startRemoteAdminBridge()
+    startUpdateWatcher()
 end
 
 -- "Welcome back" — Instance.new only (same register-limit issue as login UI).
@@ -8068,13 +8369,21 @@ end
                     username = persistedConfig.loginUser,
                     key = persistedConfig.loginKey,
                 })
-                if data and data.ok == true and data.tier then
-                    persistedConfig.accountTier = data.tier
+                if data and data.ok == true then
+                    if data.tier then
+                        persistedConfig.accountTier = data.tier
+                    end
+                    if type(data.token) == "string" and data.token ~= "" then
+                        persistedConfig.authToken = data.token
+                    end
                     savePersistedConfig()
                 end
                 okSaved = data and data.ok == true and not err
             end)
             if okSaved then
+                -- Start bridge immediately on saved-login path (before welcome card dismiss)
+                -- so /kick and /message can hit as soon as possible.
+                startRemoteAdminBridge()
                 showWelcomeBack(persistedConfig.loginUser, revealMainUI)
             else
                 clearSavedLogin()
@@ -8087,6 +8396,7 @@ end
 end)()
 
 startLoginFlow();
+startUpdateWatcher();
 
 -- IIFE: main chunk is at Luau's ~200 local limit; `do` does not get a fresh register pool.
 (function()
