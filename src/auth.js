@@ -108,14 +108,43 @@ export async function redeemKey({ username, discordId, code }) {
   return { tier: key.tier, expiresAt };
 }
 
+function normalizeIdentity(identity) {
+  return String(identity || "").trim();
+}
+
+function parseDiscordIdFromIdentity(identity) {
+  const raw = normalizeIdentity(identity);
+  if (!raw) return null;
+  const mention = raw.match(/^<@!?(\d+)>$/);
+  if (mention) return mention[1];
+  if (/^\d{17,20}$/.test(raw)) return raw;
+  return null;
+}
+
 export async function getUserByUsername(username) {
-  const user = await prisma.user.findUnique({ where: { username } });
+  const user = await prisma.user.findUnique({ where: { username: normalizeIdentity(username) } });
   if (!user) throw new Error("User not found");
   return user;
 }
 
-export async function statusUser(username) {
-  const user = await getUserByUsername(username);
+export async function getUserByIdentity(identity) {
+  const raw = normalizeIdentity(identity);
+  if (!raw) throw new Error("User identity required");
+
+  const discordId = parseDiscordIdFromIdentity(raw);
+  if (discordId) {
+    const byDiscord = await prisma.user.findFirst({ where: { discordId } });
+    if (byDiscord) return byDiscord;
+  }
+
+  const byUsername = await prisma.user.findUnique({ where: { username: raw } });
+  if (byUsername) return byUsername;
+
+  throw new Error("User not found (use linked Discord @mention/id or exact username)");
+}
+
+export async function statusUser(identity) {
+  const user = await getUserByIdentity(identity);
   const license = await prisma.license.findFirst({
     where: { userId: user.id, active: true },
     orderBy: { expiresAt: "desc" },
@@ -123,8 +152,8 @@ export async function statusUser(username) {
   return { user, license };
 }
 
-export async function extendUser(username, days) {
-  const user = await getUserByUsername(username);
+export async function extendUser(identity, days) {
+  const user = await getUserByIdentity(identity);
   let license = await prisma.license.findFirst({
     where: { userId: user.id, active: true },
     orderBy: { expiresAt: "desc" },
@@ -148,8 +177,8 @@ export async function extendUser(username, days) {
   });
 }
 
-export async function revokeUser(username) {
-  const user = await getUserByUsername(username);
+export async function revokeUser(identity) {
+  const user = await getUserByIdentity(identity);
   await prisma.license.updateMany({
     where: { userId: user.id, active: true },
     data: { active: false, expiresAt: new Date() },
@@ -157,8 +186,8 @@ export async function revokeUser(username) {
   await logoutAllSessions(user.username);
 }
 
-export async function resetPassword(username, newPassword) {
-  const user = await getUserByUsername(username);
+export async function resetPassword(identity, newPassword) {
+  const user = await getUserByIdentity(identity);
   const hash = await bcrypt.hash(newPassword, 12);
   await prisma.user.update({
     where: { id: user.id },
@@ -189,7 +218,7 @@ export async function unlinkDiscord(discordId) {
 }
 
 export async function transferDiscord(username, targetDiscordId) {
-  const user = await getUserByUsername(username);
+  const user = await getUserByIdentity(username);
   const existing = await prisma.user.findFirst({ where: { discordId: targetDiscordId } });
   if (existing && existing.id !== user.id) throw new Error("Target Discord already linked");
   await prisma.user.update({
@@ -199,7 +228,7 @@ export async function transferDiscord(username, targetDiscordId) {
 }
 
 export async function assignKey(username, code) {
-  const user = await getUserByUsername(username);
+  const user = await getUserByIdentity(username);
   const key = await prisma.key.findUnique({ where: { code } });
   if (!key) throw new Error("Key not found");
   if (key.redeemedAt) throw new Error("Key already redeemed");
@@ -213,7 +242,7 @@ export async function listKeys({ username, discordId, filter }) {
   let where = {};
   if (username || discordId) {
     const user = username
-      ? await getUserByUsername(username)
+      ? await getUserByIdentity(username)
       : await prisma.user.findFirst({ where: { discordId } });
     if (!user) throw new Error("User not found");
     where = {
@@ -230,16 +259,16 @@ export async function listKeys({ username, discordId, filter }) {
 }
 
 export async function setBlacklist(username, blacklisted) {
-  const user = await getUserByUsername(username);
+  const user = await getUserByIdentity(username);
   await prisma.user.update({
     where: { id: user.id },
     data: { blacklisted },
   });
-  if (blacklisted) await logoutAllSessions(username);
+  if (blacklisted) await logoutAllSessions(user.username);
 }
 
-export async function getSessions(username, scope = "all") {
-  const user = await getUserByUsername(username);
+export async function getSessions(identity, scope = "all") {
+  const user = await getUserByIdentity(identity);
   const where = { userId: user.id };
   if (scope === "current") where.endedAt = null;
   if (scope === "previous") where.endedAt = { not: null };
@@ -250,8 +279,8 @@ export async function getSessions(username, scope = "all") {
   });
 }
 
-export async function logoutAllSessions(username) {
-  const user = await getUserByUsername(username);
+export async function logoutAllSessions(identity) {
+  const user = await getUserByIdentity(identity);
   await prisma.session.updateMany({
     where: { userId: user.id, endedAt: null },
     data: { revoked: true, endedAt: new Date() },
@@ -272,7 +301,7 @@ export async function issueBulk(days, count) {
 }
 
 export async function setTier(username, rank) {
-  const user = await getUserByUsername(username);
+  const user = await getUserByIdentity(username);
   return prisma.user.update({
     where: { id: user.id },
     data: { rank },
@@ -280,7 +309,7 @@ export async function setTier(username, rank) {
 }
 
 export async function deleteAccount(username) {
-  const user = await getUserByUsername(username);
+  const user = await getUserByIdentity(username);
   await prisma.$transaction([
     prisma.session.deleteMany({ where: { userId: user.id } }),
     prisma.license.deleteMany({ where: { userId: user.id } }),
@@ -446,8 +475,7 @@ async function assertUserInGameWithScript(userId) {
 }
 
 export async function enqueueKickByDiscordId(discordId) {
-  const user = await prisma.user.findFirst({ where: { discordId: String(discordId) } });
-  if (!user) throw new Error("No script account linked to that Discord user");
+  const user = await getUserByIdentity(discordId);
   await assertUserInGameWithScript(user.id);
   pushCommand(user.id, { action: "kick" });
   return { username: user.username };
@@ -458,8 +486,7 @@ export async function enqueueMessageByDiscordId(discordId, message) {
   if (!text) throw new Error("Message required");
   if (text.length > 500) throw new Error("Message too long (max 500)");
 
-  const user = await prisma.user.findFirst({ where: { discordId: String(discordId) } });
-  if (!user) throw new Error("No script account linked to that Discord user");
+  const user = await getUserByIdentity(discordId);
   await assertUserInGameWithScript(user.id);
   pushCommand(user.id, { action: "message", message: text });
   return { username: user.username };

@@ -152,15 +152,21 @@ const commands = [
   new SlashCommandBuilder().setName("unlink").setDescription("User: unlink your Discord account"),
   new SlashCommandBuilder()
     .setName("kick")
-    .setDescription("Admin: kick a linked user from Roblox (UniversalAdmin running in-game)")
+    .setDescription("Admin: kick user by Discord @/id or script username")
     .addUserOption((o) =>
-      o.setName("user").setDescription("Discord account linked to their script login").setRequired(true)
+      o.setName("user").setDescription("Discord user target").setRequired(false)
+    )
+    .addStringOption((o) =>
+      o.setName("target").setDescription("Script username or Discord id/mention").setRequired(false)
     ),
   new SlashCommandBuilder()
     .setName("message")
-    .setDescription("Admin: show a brief message on a linked user's screen (script in-game)")
+    .setDescription("Admin: message user by Discord @/id or script username")
     .addUserOption((o) =>
-      o.setName("user").setDescription("Discord account linked to their script login").setRequired(true)
+      o.setName("user").setDescription("Discord user target").setRequired(false)
+    )
+    .addStringOption((o) =>
+      o.setName("target").setDescription("Script username or Discord id/mention").setRequired(false)
     )
     .addStringOption((o) =>
       o.setName("text").setDescription("Message text").setRequired(true).setMaxLength(500)
@@ -440,8 +446,11 @@ export async function startBot() {
 
       if (interaction.commandName === "kick") {
         requireAdmin(interaction);
-        const target = interaction.options.getUser("user", true);
-        const out = await enqueueKickByDiscordId(target.id);
+        const targetUser = interaction.options.getUser("user");
+        const targetText = interaction.options.getString("target");
+        const identity = targetUser ? targetUser.id : targetText;
+        if (!identity) throw new Error("Provide either user:@discord or target:<username|discord id>");
+        const out = await enqueueKickByDiscordId(identity);
         await interaction.reply({
           content: `Kick queued for **${out.username}** (next client poll, ~15s).`,
           ephemeral: true,
@@ -451,9 +460,12 @@ export async function startBot() {
 
       if (interaction.commandName === "message") {
         requireAdmin(interaction);
-        const target = interaction.options.getUser("user", true);
+        const targetUser = interaction.options.getUser("user");
+        const targetText = interaction.options.getString("target");
+        const identity = targetUser ? targetUser.id : targetText;
+        if (!identity) throw new Error("Provide either user:@discord or target:<username|discord id>");
         const text = interaction.options.getString("text", true);
-        const out = await enqueueMessageByDiscordId(target.id, text);
+        const out = await enqueueMessageByDiscordId(identity, text);
         await interaction.reply({
           content: `Message queued for **${out.username}** (shows on next poll).`,
           ephemeral: true,
