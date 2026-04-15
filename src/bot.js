@@ -240,6 +240,22 @@ export async function startBot() {
 
   const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
+  async function assignMemberRoleByConfig(discordUserId) {
+    if (!config.memberRoleId || !config.discordGuildId) return false;
+    try {
+      const guild =
+        (client.guilds.cache && client.guilds.cache.get(config.discordGuildId))
+        || (await client.guilds.fetch(config.discordGuildId));
+      if (!guild) return false;
+      const member = await guild.members.fetch(discordUserId);
+      if (!member) return false;
+      await member.roles.add(config.memberRoleId);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   client.once("ready", () => {
     console.log(`Discord bot ready as ${client.user.tag}`);
   });
@@ -252,14 +268,9 @@ export async function startBot() {
         const username = interaction.options.getString("user", true);
         const password = interaction.options.getString("pass", true);
         await registerUser({ username, password, discordId: interaction.user.id });
-        if (config.memberRoleId && interaction.guild) {
-          const member = await interaction.guild.members.fetch(interaction.user.id);
-          if (member) {
-            await member.roles.add(config.memberRoleId).catch(() => null);
-          }
-        }
+        const roleAssigned = await assignMemberRoleByConfig(interaction.user.id);
         await interaction.reply({
-          content: `Registered \`${username}\`${config.memberRoleId ? " and role assigned" : ""}`,
+          content: `Registered \`${username}\`${roleAssigned ? " and role assigned" : (config.memberRoleId ? " (role not assigned automatically)" : "")}`,
           ephemeral: true,
         });
         return;
