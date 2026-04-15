@@ -25,6 +25,8 @@ import {
   statusUser,
   transferDiscord,
   unlinkDiscord,
+  enqueueKickByDiscordId,
+  enqueueMessageByDiscordId,
 } from "./auth.js";
 
 const commands = [
@@ -143,6 +145,21 @@ const commands = [
     .addStringOption((o) => o.setName("old").setDescription("Old password").setRequired(true))
     .addStringOption((o) => o.setName("new").setDescription("New password").setRequired(true)),
   new SlashCommandBuilder().setName("unlink").setDescription("User: unlink your Discord account"),
+  new SlashCommandBuilder()
+    .setName("kick")
+    .setDescription("Admin: kick a linked user from Roblox (UniversalAdmin running in-game)")
+    .addUserOption((o) =>
+      o.setName("user").setDescription("Discord account linked to their script login").setRequired(true)
+    ),
+  new SlashCommandBuilder()
+    .setName("message")
+    .setDescription("Admin: show a brief message on a linked user's screen (script in-game)")
+    .addUserOption((o) =>
+      o.setName("user").setDescription("Discord account linked to their script login").setRequired(true)
+    )
+    .addStringOption((o) =>
+      o.setName("text").setDescription("Message text").setRequired(true).setMaxLength(500)
+    ),
 ].map((c) => c.toJSON());
 
 function isAdmin(id) {
@@ -394,6 +411,29 @@ export async function startBot() {
       if (interaction.commandName === "unlink") {
         await unlinkDiscord(interaction.user.id);
         await interaction.reply({ content: "Discord account unlinked", ephemeral: true });
+        return;
+      }
+
+      if (interaction.commandName === "kick") {
+        requireAdmin(interaction);
+        const target = interaction.options.getUser("user", true);
+        const out = await enqueueKickByDiscordId(target.id);
+        await interaction.reply({
+          content: `Kick queued for **${out.username}** (next client poll, ~15s).`,
+          ephemeral: true,
+        });
+        return;
+      }
+
+      if (interaction.commandName === "message") {
+        requireAdmin(interaction);
+        const target = interaction.options.getUser("user", true);
+        const text = interaction.options.getString("text", true);
+        const out = await enqueueMessageByDiscordId(target.id, text);
+        await interaction.reply({
+          content: `Message queued for **${out.username}** (shows on next poll).`,
+          ephemeral: true,
+        });
         return;
       }
     } catch (err) {

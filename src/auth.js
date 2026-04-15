@@ -367,3 +367,79 @@ export async function scriptLoginWithSavedKey({ username, keyCode }) {
   );
   return { token, tier: activeLicense.tier, expiresAt: activeLicense.expiresAt, key: key.code };
 }
+
+// --- Remote admin: presence + pending commands for Discord /kick and /message ---
+
+const pendingClientCommands = new Map();
+let clientCommandSeq = 1;
+
+function pushCommand(userId, cmd) {
+  const list = pendingClientCommands.get(userId) || [];
+  list.push({ id: clientCommandSeq++, ...cmd });
+  pendingClientCommands.set(userId, list);
+}
+
+export async function updateScriptPresence(token, { robloxUserId, placeId, gameId }) {
+  const payload = await validateToken(token);
+  const userId = Number(payload.sub);
+  const session = await prisma.session.findUnique({ where: { tokenJti: payload.jti } });
+  if (!session || session.endedAt || session.revoked) throw new Error("Session invalid");
+
+  await prisma.session.update({
+    where: { id: session.id },
+    data: {
+      robloxUserId: robloxUserId != null ? String(robloxUserId) : session.robloxUserId,
+      robloxPlaceId: placeId != null ? String(placeId) : session.robloxPlaceId,
+      robloxGameId: gameId != null ? String(gameId) : session.robloxGameId,
+      lastSeenAt: new Date(),
+    },
+  });
+  return { userId };
+}
+
+export function getAndClearPendingCommands(userId) {
+  const list = pendingClientCommands.get(userId);
+  pendingClientCommands.delete(userId);
+  return list || [];
+}
+
+const PRESENCE_MAX_AGE_MS = 90_000;
+
+async function assertUserInGameWithScript(userId) {
+  const cutoff = new Date(Date.now() - PRESENCE_MAX_AGE_MS);
+  const session = await prisma.session.findFirst({
+    where: {
+      userId,
+      endedAt: null,
+      revoked: false,
+      lastSeenAt: { gte: cutoff },
+      robloxUserId: { not: null },
+    },
+    orderBy: { lastSeenAt: "desc" },
+  });
+  if (!session) {
+    throw new Error(
+      "No live UniversalAdmin session with Roblox presence (user must be in-game with the script; wait ~15s after load)"
+    );
+  }
+}
+
+export async function enqueueKickByDiscordId(discordId) {
+  const user = await prisma.user.findFirst({ where: { discordId: String(discordId) } });
+  if (!user) throw new Error("No script account linked to that Discord user");
+  await assertUserInGameWithScript(user.id);
+  pushCommand(user.id, { action: "kick" });
+  return { username: user.username };
+}
+
+export async function enqueueMessageByDiscordId(discordId, message) {
+  const text = (message || "").trim();
+  if (!text) throw new Error("Message required");
+  if (text.length > 500) throw new Error("Message too long (max 500)");
+
+  const user = await prisma.user.findFirst({ where: { discordId: String(discordId) } });
+  if (!user) throw new Error("No script account linked to that Discord user");
+  await assertUserInGameWithScript(user.id);
+  pushCommand(user.id, { action: "message", message: text });
+  return { username: user.username };
+}

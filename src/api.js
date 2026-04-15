@@ -2,7 +2,14 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import express from "express";
-import { loginUser, scriptLoginWithPassword, scriptLoginWithSavedKey, validateToken } from "./auth.js";
+import {
+  loginUser,
+  scriptLoginWithPassword,
+  scriptLoginWithSavedKey,
+  validateToken,
+  updateScriptPresence,
+  getAndClearPendingCommands,
+} from "./auth.js";
 import { prisma } from "./db.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -90,6 +97,33 @@ export function createApi() {
     })().catch(() => {
       res.status(401).json({ ok: false, error: "invalid token" });
     });
+  });
+
+  app.post("/client/presence", async (req, res) => {
+    try {
+      const auth = req.headers.authorization || "";
+      const m = auth.match(/^Bearer\s+(.+)$/i);
+      if (!m) return res.status(401).json({ ok: false, error: "Bearer token required" });
+      const { robloxUserId, placeId, gameId } = req.body || {};
+      await updateScriptPresence(m[1], { robloxUserId, placeId, gameId });
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(401).json({ ok: false, error: err.message });
+    }
+  });
+
+  app.get("/client/commands", async (req, res) => {
+    try {
+      const auth = req.headers.authorization || "";
+      const m = auth.match(/^Bearer\s+(.+)$/i);
+      if (!m) return res.status(401).json({ ok: false, error: "Bearer token required" });
+      const payload = await validateToken(m[1]);
+      const userId = Number(payload.sub);
+      const commands = getAndClearPendingCommands(userId);
+      res.json({ ok: true, commands });
+    } catch (err) {
+      res.status(401).json({ ok: false, error: err.message });
+    }
   });
 
   app.post("/session/start", async (req, res) => {
