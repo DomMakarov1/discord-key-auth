@@ -215,9 +215,14 @@ async function replyPagedEmbed(interaction, title, items, page, formatter) {
 export async function startBot() {
   const rest = new REST({ version: "10" }).setToken(config.discordToken);
   await rest.put(
+    Routes.applicationCommands(config.discordClientId),
+    { body: commands }
+  );
+  await rest.put(
     Routes.applicationGuildCommands(config.discordClientId, config.discordGuildId),
     { body: commands }
   );
+  console.log("Registered slash commands globally (DM) and for guild (instant updates).");
 
   const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
