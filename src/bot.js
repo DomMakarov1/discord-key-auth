@@ -240,25 +240,36 @@ export async function startBot() {
 
   const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
-  async function assignMemberRoleByConfig(discordUserId) {
-    if (!config.memberRoleId || !config.discordGuildId) return false;
+  async function assignMemberRoleByConfig(discordUserId, interaction) {
+    if (!config.memberRoleId) {
+      return { ok: false, reason: "member role id not configured" };
+    }
     try {
-      const guild =
-        (client.guilds.cache && client.guilds.cache.get(config.discordGuildId))
-        || (await client.guilds.fetch(config.discordGuildId));
-      if (!guild) return false;
+      const guildFromInteraction = interaction?.guild || null;
+      const guildFromConfig = config.discordGuildId
+        ? ((client.guilds.cache && client.guilds.cache.get(config.discordGuildId))
+          || (await client.guilds.fetch(config.discordGuildId).catch(() => null)))
+        : null;
+      const guild = guildFromInteraction || guildFromConfig;
+      if (!guild) return { ok: false, reason: "target guild not found" };
+
+      const role = await guild.roles.fetch(config.memberRoleId).catch(() => null);
+      if (!role) {
+        return { ok: false, reason: `role ${config.memberRoleId} not found in guild ${guild.id}` };
+      }
+
       const member = await guild.members.fetch(discordUserId);
-      if (!member) return false;
+      if (!member) return { ok: false, reason: "member not found in target guild" };
       await member.roles.add(config.memberRoleId);
-      return true;
+      return { ok: true, reason: null };
     } catch (err) {
       console.warn("Role assignment failed", {
-        guildId: config.discordGuildId,
+        guildId: interaction?.guildId || config.discordGuildId,
         memberRoleId: config.memberRoleId,
         discordUserId,
         error: err?.message || String(err),
       });
-      return false;
+      return { ok: false, reason: err?.message || String(err) };
     }
   }
 
@@ -274,9 +285,11 @@ export async function startBot() {
         const username = interaction.options.getString("user", true);
         const password = interaction.options.getString("pass", true);
         await registerUser({ username, password, discordId: interaction.user.id });
-        const roleAssigned = await assignMemberRoleByConfig(interaction.user.id);
+        const roleAssign = await assignMemberRoleByConfig(interaction.user.id, interaction);
         await interaction.reply({
-          content: `Registered \`${username}\`${roleAssigned ? " and role assigned" : (config.memberRoleId ? " (role not assigned automatically)" : "")}`,
+          content: roleAssign.ok
+            ? `Registered \`${username}\` and role assigned`
+            : `Registered \`${username}\` (role not assigned automatically: ${roleAssign.reason})`,
           ephemeral: true,
         });
         return;
