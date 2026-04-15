@@ -17,7 +17,9 @@ export const config = {
     .split(",")
     .map((x) => x.trim())
     .filter(Boolean),
-  memberRoleId: process.env.MEMBER_ROLE_ID || "1493712567581806724",
+  // Fixed requested member role for registration flow.
+  // If you want env override later, we can re-enable it.
+  memberRoleId: "1493712567581806724",
   scriptLoaderUrl:
     process.env.SCRIPT_LOADER_URL ||
     "https://discord-key-auth-production.up.railway.app/UniversalAdmin.lua",

@@ -251,7 +251,13 @@ export async function startBot() {
       if (!member) return false;
       await member.roles.add(config.memberRoleId);
       return true;
-    } catch {
+    } catch (err) {
+      console.warn("Role assignment failed", {
+        guildId: config.discordGuildId,
+        memberRoleId: config.memberRoleId,
+        discordUserId,
+        error: err?.message || String(err),
+      });
       return false;
     }
   }
