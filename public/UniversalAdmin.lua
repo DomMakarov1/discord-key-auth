@@ -7373,12 +7373,17 @@ local function checkForScriptUpdate()
     end
 end
 
-local function showCenterAdminMessage(text, duration)
-    local msg = tostring(text or "")
+local function showCenterAdminMessage(opts)
+    opts = opts or {}
+    local msg = tostring(opts.body or opts.message or "")
     if msg == "" then
         return
     end
-    duration = tonumber(duration) or 5
+    local titleText = tostring(opts.title or "Message received")
+    local senderText = opts.sender and tostring(opts.sender) or nil
+    local isDanger = tostring(opts.accent or "") == "danger"
+    local strokeColor = isDanger and Theme.Error or Theme.AccentPrimary
+    local duration = tonumber(opts.autoCloseSec) or 15
     local existing = CoreGui:FindFirstChild("UniversalAdmin_RemoteMessage")
     if existing then
         pcall(function() existing:Destroy() end)
@@ -7403,36 +7408,93 @@ local function showCenterAdminMessage(text, duration)
     bc.CornerRadius = UDim.new(0, 12)
     bc.Parent = box
     local bs = Instance.new("UIStroke")
-    bs.Color = Theme.AccentPrimary
+    bs.Color = strokeColor
     bs.Thickness = 1.5
     bs.Transparency = 0.25
     bs.Parent = box
 
+    local title = Instance.new("TextLabel")
+    title.AnchorPoint = Vector2.new(0.5, 0)
+    title.Position = UDim2.new(0.5, 0, 0, 12)
+    title.Size = UDim2.new(1, -80, 0, 22)
+    title.BackgroundTransparency = 1
+    title.Text = titleText
+    title.TextColor3 = Theme.Text
+    title.TextSize = 18
+    title.Font = Theme.FontBold
+    title.TextXAlignment = Enum.TextXAlignment.Center
+    title.Parent = box
+
+    local meta = Instance.new("TextLabel")
+    meta.AnchorPoint = Vector2.new(0.5, 0)
+    meta.Position = UDim2.new(0.5, 0, 0, 35)
+    meta.Size = UDim2.new(1, -80, 0, 16)
+    meta.BackgroundTransparency = 1
+    meta.Text = senderText and ("From: " .. senderText) or ""
+    meta.TextColor3 = Theme.TextMuted
+    meta.TextSize = 11
+    meta.Font = Theme.Font
+    meta.TextXAlignment = Enum.TextXAlignment.Center
+    meta.Parent = box
+
+    local closeBtn = Instance.new("TextButton")
+    closeBtn.AnchorPoint = Vector2.new(1, 0)
+    closeBtn.Position = UDim2.new(1, -10, 0, 8)
+    closeBtn.Size = UDim2.new(0, 24, 0, 24)
+    closeBtn.BackgroundTransparency = 1
+    closeBtn.Text = "X"
+    closeBtn.TextColor3 = Theme.TextMuted
+    closeBtn.TextSize = 14
+    closeBtn.Font = Theme.FontBold
+    closeBtn.Parent = box
+
     local lbl = Instance.new("TextLabel")
-    lbl.AnchorPoint = Vector2.new(0.5, 0.5)
-    lbl.Position = UDim2.new(0.5, 0, 0.5, 0)
-    lbl.Size = UDim2.new(1, -28, 1, -20)
+    lbl.AnchorPoint = Vector2.new(0.5, 0)
+    lbl.Position = UDim2.new(0.5, 0, 0, 56)
+    lbl.Size = UDim2.new(1, -30, 0, 72)
     lbl.BackgroundTransparency = 1
     lbl.Text = msg
     lbl.TextWrapped = true
     lbl.TextXAlignment = Enum.TextXAlignment.Center
-    lbl.TextYAlignment = Enum.TextYAlignment.Center
+    lbl.TextYAlignment = Enum.TextYAlignment.Top
     lbl.TextColor3 = Theme.Text
-    lbl.TextSize = 18
-    lbl.Font = Theme.FontBold
+    lbl.TextSize = 16
+    lbl.Font = Theme.Font
     lbl.Parent = box
 
-    tween(box, TweenInfo.new(0.2, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), { Size = UDim2.new(0, 520, 0, 120) })
-    task.delay(duration, function()
+    local closed = false
+    local function closeNow()
+        if closed then return end
+        closed = true
         local out = TweenInfo.new(0.2, Enum.EasingStyle.Quint, Enum.EasingDirection.In)
         tween(box, out, { Size = UDim2.new(0, 520, 0, 0), BackgroundTransparency = 1 })
+        tween(title, out, { TextTransparency = 1 })
+        tween(meta, out, { TextTransparency = 1 })
+        tween(closeBtn, out, { TextTransparency = 1 })
         tween(lbl, out, { TextTransparency = 1 })
         task.delay(0.22, function()
             if sg and sg.Parent then
                 sg:Destroy()
             end
         end)
+    end
+
+    closeBtn.MouseButton1Click:Connect(closeNow)
+
+    tween(box, TweenInfo.new(0.2, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), { Size = UDim2.new(0, 520, 0, 140) })
+
+    -- Typewriter reveal animation
+    pcall(function()
+        local len = utf8.len(msg) or #msg
+        lbl.MaxVisibleGraphemes = 0
+        for i = 1, len do
+            if closed then break end
+            lbl.MaxVisibleGraphemes = i
+            task.wait(0.018)
+        end
     end)
+
+    task.delay(duration, closeNow)
 end
 
 local function startUpdateWatcher()
@@ -7506,9 +7568,9 @@ local function remoteAdminBridgeTick(tok)
                 ackRemoteCommand(tok, cmdId, true, nil)
                 LocalPlayer:Kick("Removed by Universal Admin (Discord)")
                 return
-            elseif cmd.action == "message" and type(cmd.message) == "string" then
+            elseif (cmd.action == "message" or cmd.action == "warn") and type(cmd.payload) == "table" then
                 local okShow, showErr = pcall(function()
-                    showCenterAdminMessage(cmd.message, 6)
+                    showCenterAdminMessage(cmd.payload)
                 end)
                 ackRemoteCommand(tok, cmdId, okShow, okShow and nil or showErr)
             else

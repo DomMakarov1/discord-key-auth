@@ -605,12 +605,25 @@ export async function enqueueMessageByDiscordId(discordId, message, options = {}
   return { username: user.username, commandId: cmd.id };
 }
 
+async function hasLiveScriptPresence(userId) {
+  const cutoff = new Date(Date.now() - PRESENCE_MAX_AGE_MS);
+  const session = await prisma.session.findFirst({
+    where: {
+      userId,
+      endedAt: null,
+      revoked: false,
+      lastSeenAt: { gte: cutoff },
+    },
+    orderBy: { lastSeenAt: "desc" },
+  });
+  return !!session;
+}
+
 export async function enqueueWarnByIdentity(identity, message, options = {}) {
   const text = (message || "").trim();
   if (!text) throw new Error("Warning message required");
   if (text.length > 500) throw new Error("Warning too long (max 500)");
   const user = await getUserByIdentity(identity);
-  await assertUserInGameWithScript(user.id);
   const senderName = String(options.senderName || "").trim();
   const anonymous = options.anonymous !== false;
   const warning = await prisma.warning.create({
@@ -621,15 +634,19 @@ export async function enqueueWarnByIdentity(identity, message, options = {}) {
       issuedByName: anonymous ? null : (senderName || null),
     },
   });
-  const cmd = await enqueueClientCommand(user.id, "warn", {
-    title: "Warning Issued",
-    body: text,
-    sender: anonymous ? null : (senderName || "Unknown sender"),
-    accent: "danger",
-    autoCloseSec: 15,
-    warningId: warning.id,
-  });
-  return { username: user.username, commandId: cmd.id, warningId: warning.id };
+  let commandId = null;
+  if (await hasLiveScriptPresence(user.id)) {
+    const cmd = await enqueueClientCommand(user.id, "warn", {
+      title: "Warning Issued",
+      body: text,
+      sender: anonymous ? null : (senderName || "Unknown sender"),
+      accent: "danger",
+      autoCloseSec: 15,
+      warningId: warning.id,
+    });
+    commandId = cmd.id;
+  }
+  return { username: user.username, commandId, warningId: warning.id, deliveredLive: !!commandId };
 }
 
 export async function listWarningsByIdentity(identity) {

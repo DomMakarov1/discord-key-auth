@@ -552,7 +552,9 @@ export async function startBot() {
           issuedByDiscordId: interaction.user.id,
         });
         await interaction.reply({
-          content: `Warning queued for **${out.username}** (warning #${out.warningId}, command #${out.commandId}).`,
+          content: out.deliveredLive
+            ? `Warning saved for **${out.username}** (#${out.warningId}) and live popup queued (command #${out.commandId}).`
+            : `Warning saved for **${out.username}** (#${out.warningId}). User is offline/not running script, so no live popup queued.`,
           ephemeral: true,
         });
         return;
