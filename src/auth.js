@@ -4,6 +4,36 @@ import { nanoid } from "nanoid";
 import { config } from "./config.js";
 import { prisma } from "./db.js";
 
+function parseBlacklistDuration(input) {
+  const raw = String(input || "").trim().toLowerCase();
+  if (!raw) throw new Error("Blacklist duration required (infinite, 5h, 10d)");
+  if (raw === "infinite" || raw === "inf" || raw === "perm" || raw === "permanent") {
+    return null;
+  }
+  const m = raw.match(/^(\d+)\s*([hd])$/i);
+  if (!m) {
+    throw new Error("Invalid duration. Use infinite or formats like 5h / 10d");
+  }
+  const amount = Number(m[1]);
+  const unit = m[2].toLowerCase();
+  if (!Number.isFinite(amount) || amount <= 0) {
+    throw new Error("Duration must be a positive number");
+  }
+  const ms = unit === "h" ? amount * 60 * 60 * 1000 : amount * 24 * 60 * 60 * 1000;
+  return new Date(Date.now() + ms);
+}
+
+async function isUserBlacklistedNow(user) {
+  if (!user || !user.blacklisted) return false;
+  if (!user.blacklistedUntil) return true; // infinite
+  if (new Date(user.blacklistedUntil).getTime() > Date.now()) return true;
+  await prisma.user.update({
+    where: { id: user.id },
+    data: { blacklisted: false, blacklistedUntil: null },
+  });
+  return false;
+}
+
 export async function registerUser({ username, password, discordId }) {
   const exists = await prisma.user.findUnique({ where: { username } });
   if (exists) throw new Error("Username already exists");
@@ -16,7 +46,7 @@ export async function registerUser({ username, password, discordId }) {
 export async function loginUser({ username, password }) {
   const user = await prisma.user.findUnique({ where: { username } });
   if (!user) throw new Error("Invalid credentials");
-  if (user.blacklisted) throw new Error("User is blacklisted");
+  if (await isUserBlacklistedNow(user)) throw new Error("User is blacklisted");
   const ok = await bcrypt.compare(password, user.passwordHash);
   if (!ok) throw new Error("Invalid credentials");
 
@@ -59,7 +89,8 @@ export async function validateToken(token) {
   const userId = Number(payload.sub);
   if (!userId || !payload.jti) throw new Error("Invalid token payload");
   const user = await prisma.user.findUnique({ where: { id: userId } });
-  if (!user || user.blacklisted) throw new Error("User blocked");
+  if (!user) throw new Error("User blocked");
+  if (await isUserBlacklistedNow(user)) throw new Error("User blocked");
   const session = await prisma.session.findUnique({ where: { tokenJti: payload.jti } });
   if (!session || session.revoked) throw new Error("Session revoked");
   await prisma.session.update({
@@ -81,7 +112,7 @@ export async function redeemKey({ username, discordId, code }) {
     ? await prisma.user.findUnique({ where: { username } })
     : await prisma.user.findFirst({ where: { discordId } });
   if (!user) throw new Error("User not found");
-  if (user.blacklisted) throw new Error("User is blacklisted");
+  if (await isUserBlacklistedNow(user)) throw new Error("User is blacklisted");
 
   const key = await prisma.key.findUnique({ where: { code } });
   if (!key) throw new Error("Invalid key");
@@ -258,13 +289,17 @@ export async function listKeys({ username, discordId, filter }) {
   });
 }
 
-export async function setBlacklist(username, blacklisted) {
-  const user = await getUserByIdentity(username);
+export async function setBlacklist(identity, blacklisted, durationInput = null) {
+  const user = await getUserByIdentity(identity);
+  const data = blacklisted
+    ? { blacklisted: true, blacklistedUntil: parseBlacklistDuration(durationInput) }
+    : { blacklisted: false, blacklistedUntil: null };
   await prisma.user.update({
     where: { id: user.id },
-    data: { blacklisted },
+    data,
   });
   if (blacklisted) await logoutAllSessions(user.username);
+  return { username: user.username, blacklistedUntil: data.blacklistedUntil };
 }
 
 export async function getSessions(identity, scope = "all") {
@@ -330,7 +365,7 @@ export async function deleteAccount(username) {
 export async function scriptLoginWithPassword({ username, password }) {
   const user = await prisma.user.findUnique({ where: { username } });
   if (!user) throw new Error("Account does not exist");
-  if (user.blacklisted) throw new Error("Account blacklisted");
+  if (await isUserBlacklistedNow(user)) throw new Error("Account blacklisted");
   const ok = await bcrypt.compare(password, user.passwordHash);
   if (!ok) throw new Error("Invalid username or password");
 
@@ -382,7 +417,7 @@ export async function scriptLoginWithPassword({ username, password }) {
 export async function scriptLoginWithSavedKey({ username, keyCode }) {
   const user = await prisma.user.findUnique({ where: { username } });
   if (!user) throw new Error("Account does not exist");
-  if (user.blacklisted) throw new Error("Account blacklisted");
+  if (await isUserBlacklistedNow(user)) throw new Error("Account blacklisted");
 
   const key = await prisma.key.findUnique({ where: { code: keyCode } });
   if (!key) throw new Error("Invalid key");
@@ -463,7 +498,6 @@ async function assertUserInGameWithScript(userId) {
       endedAt: null,
       revoked: false,
       lastSeenAt: { gte: cutoff },
-      robloxUserId: { not: null },
     },
     orderBy: { lastSeenAt: "desc" },
   });

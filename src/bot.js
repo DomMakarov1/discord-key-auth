@@ -100,12 +100,18 @@ const commands = [
     ),
   new SlashCommandBuilder()
     .setName("blacklist")
-    .setDescription("Admin: blacklist user")
-    .addStringOption((o) => o.setName("user").setDescription("Username").setRequired(true)),
+    .setDescription("Admin: blacklist user (infinite or timed, e.g. 5h / 10d)")
+    .addStringOption((o) => o.setName("user").setDescription("Username or Discord @/id").setRequired(true))
+    .addStringOption((o) =>
+      o
+        .setName("duration")
+        .setDescription("infinite, 5h, 10d")
+        .setRequired(true)
+    ),
   new SlashCommandBuilder()
     .setName("unblacklist")
     .setDescription("Admin: unblacklist user")
-    .addStringOption((o) => o.setName("user").setDescription("Username").setRequired(true)),
+    .addStringOption((o) => o.setName("user").setDescription("Username or Discord @/id").setRequired(true)),
   new SlashCommandBuilder()
     .setName("sessions")
     .setDescription("Admin: view user sessions")
@@ -408,16 +414,23 @@ export async function startBot() {
       if (interaction.commandName === "blacklist") {
         requireAdmin(interaction);
         const username = interaction.options.getString("user", true);
-        await setBlacklist(username, true);
-        await interaction.reply({ content: `Blacklisted \`${username}\``, ephemeral: true });
+        const duration = interaction.options.getString("duration", true);
+        const out = await setBlacklist(username, true, duration);
+        const untilText = out.blacklistedUntil
+          ? new Date(out.blacklistedUntil).toISOString()
+          : "infinite";
+        await interaction.reply({
+          content: `Blacklisted \`${out.username}\` until **${untilText}**`,
+          ephemeral: true,
+        });
         return;
       }
 
       if (interaction.commandName === "unblacklist") {
         requireAdmin(interaction);
         const username = interaction.options.getString("user", true);
-        await setBlacklist(username, false);
-        await interaction.reply({ content: `Unblacklisted \`${username}\``, ephemeral: true });
+        const out = await setBlacklist(username, false);
+        await interaction.reply({ content: `Unblacklisted \`${out.username}\``, ephemeral: true });
         return;
       }
 
