@@ -8088,9 +8088,9 @@ end)()
 
 startLoginFlow()
 
--- Update command count
-do
+-- IIFE: main chunk is at Luau's ~200 local limit; `do` does not get a fresh register pool.
+(function()
     local totalCommands = 0
     for _ in pairs(Commands) do totalCommands = totalCommands + 1 end
     StatusText.Text = "UniversalAdmin  |  " .. totalCommands .. " commands loaded"
-end
+end)()
