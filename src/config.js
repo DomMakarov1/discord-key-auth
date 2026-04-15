@@ -18,4 +18,7 @@ export const config = {
     .map((x) => x.trim())
     .filter(Boolean),
   memberRoleId: process.env.MEMBER_ROLE_ID || "",
+  scriptLoaderUrl:
+    process.env.SCRIPT_LOADER_URL ||
+    "https://discord-key-auth-production.up.railway.app/UniversalAdmin.lua",
 };

@@ -160,6 +160,9 @@ const commands = [
     .addStringOption((o) =>
       o.setName("text").setDescription("Message text").setRequired(true).setMaxLength(500)
     ),
+  new SlashCommandBuilder()
+    .setName("script")
+    .setDescription("Get the latest UniversalAdmin loadstring"),
 ].map((c) => c.toJSON());
 
 function isAdmin(id) {
@@ -437,6 +440,20 @@ export async function startBot() {
         const out = await enqueueMessageByDiscordId(target.id, text);
         await interaction.reply({
           content: `Message queued for **${out.username}** (shows on next poll).`,
+          ephemeral: true,
+        });
+        return;
+      }
+
+      if (interaction.commandName === "script") {
+        const loader = `loadstring(game:HttpGet("${config.scriptLoaderUrl}"))()`;
+        await interaction.reply({
+          content: [
+            "Latest UniversalAdmin loader:",
+            "```lua",
+            loader,
+            "```",
+          ].join("\n"),
           ephemeral: true,
         });
         return;
