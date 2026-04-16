@@ -41,6 +41,10 @@ function hasTierAtLeast(tier, minimum) {
   return (TIER_WEIGHT[String(tier)] || 0) >= (TIER_WEIGHT[String(minimum)] || 0);
 }
 
+function maxTier(a, b) {
+  return hasTierAtLeast(a, b) ? a : b;
+}
+
 function parseBlacklistDuration(input) {
   const raw = String(input || "").trim().toLowerCase();
   if (!raw) throw new Error("Blacklist duration required (infinite, 5h, 10d)");
@@ -100,13 +104,14 @@ export async function loginUser({ username, password }) {
     },
   });
 
+  const effectiveTier = maxTier(activeLicense.tier, user.rank || "Member");
   const token = jwt.sign(
-    { sub: user.id, username: user.username, tier: activeLicense.tier, jti },
+    { sub: user.id, username: user.username, tier: effectiveTier, jti },
     config.jwtSecret,
     { expiresIn: "1h" }
   );
 
-  return { token, tier: activeLicense.tier, expiresAt: activeLicense.expiresAt, sessionId: session.id };
+  return { token, tier: effectiveTier, expiresAt: activeLicense.expiresAt, sessionId: session.id };
 }
 
 export function verifyToken(token) {
@@ -434,12 +439,13 @@ export async function scriptLoginWithPassword({ username, password }) {
     },
   });
 
+  const effectiveTier = maxTier(activeLicense.tier, user.rank || "Member");
   const token = jwt.sign(
-    { sub: user.id, username: user.username, tier: activeLicense.tier, jti },
+    { sub: user.id, username: user.username, tier: effectiveTier, jti },
     config.jwtSecret,
     { expiresIn: "1h" }
   );
-  await logScriptLogin(config, { username: user.username, tier: activeLicense.tier, jti }, {
+  await logScriptLogin(config, { username: user.username, tier: effectiveTier, jti }, {
     method: "password",
     discordId: user.discordId || null,
     keyCode: key.code,
@@ -447,7 +453,7 @@ export async function scriptLoginWithPassword({ username, password }) {
 
   return {
     token,
-    tier: activeLicense.tier,
+    tier: effectiveTier,
     expiresAt: activeLicense.expiresAt,
     key: key.code,
   };
@@ -474,17 +480,18 @@ export async function scriptLoginWithSavedKey({ username, keyCode }) {
     data: { userId: user.id, tokenJti: jti, startedAt: now, lastSeenAt: now },
   });
 
+  const effectiveTier = maxTier(activeLicense.tier, user.rank || "Member");
   const token = jwt.sign(
-    { sub: user.id, username: user.username, tier: activeLicense.tier, jti },
+    { sub: user.id, username: user.username, tier: effectiveTier, jti },
     config.jwtSecret,
     { expiresIn: "1h" }
   );
-  await logScriptLogin(config, { username: user.username, tier: activeLicense.tier, jti }, {
+  await logScriptLogin(config, { username: user.username, tier: effectiveTier, jti }, {
     method: "saved_key",
     discordId: user.discordId || null,
     keyCode,
   });
-  return { token, tier: activeLicense.tier, expiresAt: activeLicense.expiresAt, key: key.code };
+  return { token, tier: effectiveTier, expiresAt: activeLicense.expiresAt, key: key.code };
 }
 
 // --- Remote admin: persisted command queue + heartbeat diagnostics ---

@@ -28,6 +28,10 @@ local CONFIG = {
 
     -- Top bar center image: Roblox decal asset id (Creator Dashboard URL number).
     AdminTopBarDecalId = 124242419648785,
+    -- Nametag icon decal (left icon in UA tag card).
+    UserTagDecalId = 124242419648785,
+    -- Direct image/texture id for nametag icon (preferred when provided).
+    UserTagImageId = 119909165185829,
 
     -- UI Theme
     Theme = {
@@ -82,6 +86,22 @@ local function tierToDisplayLabel(tier)
     return tostring(tier)
 end
 
+local function formatTierWithRemaining(tier, expiresAtIso)
+    local base = tierToDisplayLabel(tier)
+    if type(expiresAtIso) ~= "string" or expiresAtIso == "" then
+        return base
+    end
+    local okParsed, dt = pcall(function()
+        return DateTime.fromIsoDate(expiresAtIso)
+    end)
+    if not okParsed or not dt then
+        return base
+    end
+    local sec = math.max(0, dt.UnixTimestamp - DateTime.now().UnixTimestamp)
+    local days = math.max(1, math.ceil(sec / 86400))
+    return base .. " - " .. tostring(days) .. "d"
+end
+
 local function tierLevel(tier)
     local t = tostring(tier or "Member")
     if t == "Owner" then return 3 end
@@ -130,6 +150,7 @@ local persistedConfig = {
     authToken     = nil,  -- JWT from script-login (Discord /kick, /message, presence)
     scriptFingerprint = nil, -- remote script ETag/Last-Modified snapshot for update notices
     accountTier   = nil,  -- API tier string (e.g. Member); shown as "Standard User" in UI
+    accountExpiresAt = nil, -- API license expiry ISO (for "Tier - Nd")
     hotkeyAlwaysActive = {},  -- { fly = true, noclip = true, ... }
 }
 
@@ -256,6 +277,8 @@ local openUI, closeUI, toggleUI
 local isOpen = false
 local openHelp, closeHelp
 local requestPeerActionFn
+local nametagState, broadcastPresence, refreshNametags
+local populateSuggestions
 
 -------------------------------------------------
 -- COMMAND REGISTRY
@@ -748,7 +771,7 @@ local function executeCommand(input)
 
     if cmd then
         if cmd.Premium and not hasTierAtLeast("Premium") then
-            return false, "Premium command: requires Premium or Owner tier"
+            return false, "Premium required - purchase on Discord"
         end
         local normalizedInput = tostring(input or "")
         if normalizedInput ~= "" then
@@ -877,7 +900,7 @@ local AccountTypeLabel = create("TextLabel", {
     Size = UDim2.new(1, 0, 0, 12),
     Position = UDim2.new(0, 0, 0, 22),
     BackgroundTransparency = 1,
-    Text = tierToDisplayLabel(persistedConfig.accountTier),
+    Text = formatTierWithRemaining(persistedConfig.accountTier, persistedConfig.accountExpiresAt),
     TextColor3 = Theme.TextMuted,
     TextSize = 10,
     Font = Theme.Font,
@@ -5111,6 +5134,7 @@ Commands["dex"].Execute = loadDex
 -------------------------------------------------
 -- CHAT LOG
 -------------------------------------------------
+;(function()
 local chatLogState = {
     entries = {},  -- { { player, name, text, time, timestamp } }
     conns = {},
@@ -5285,10 +5309,12 @@ Commands["chatlog"].Execute = function()
         end
     end)
 end
+end)()
 
 -------------------------------------------------
 -- ANTI-AFK
 -------------------------------------------------
+;(function()
 local antiAfkState = { enabled = false, conn = nil }
 
 local function stopAntiAfk()
@@ -5319,10 +5345,12 @@ Commands["antiafk"].Execute = function()
         notify("Anti-AFK on", "success", 2)
     end
 end
+end)()
 
 -------------------------------------------------
 -- PINGHOP — Server browser sorted by ping
 -------------------------------------------------
+;(function()
 Commands["pinghop"].Execute = function()
     notify("Fetching servers...", "info", 2)
     task.defer(function()
@@ -5477,10 +5505,12 @@ Commands["pinghop"].Execute = function()
         panel.Show()
     end)
 end
+end)()
 
 -------------------------------------------------
 -- ADMINCHECK — Detect high-rank group members
 -------------------------------------------------
+;(function()
 Commands["admincheck"].Execute = function()
     notify("Checking for admins...", "info", 2)
     task.defer(function()
@@ -5586,108 +5616,106 @@ Commands["admincheck"].Execute = function()
         notify(#admins .. " admin(s) found!", "error", 3)
     end)
 end
+end)()
 
 -------------------------------------------------
 -- INVIS — Seat-method server-side invisibility
 -- Creates a VehicleSeat, welds it to Torso, makes the character
 -- sit so the server thinks we're in a seat far away. Togglable.
 -------------------------------------------------
-local invisSeatState = { enabled = false, seat = nil, weld = nil }
+;(function()
+    local invisSeatState = { enabled = false, seat = nil, weld = nil }
 
-local function stopInvisSeat()
-    invisSeatState.enabled = false
-    setToggleState("invis", false)
-    pcall(function()
+    local function stopInvisSeat()
+        invisSeatState.enabled = false
+        setToggleState("invis", false)
+        pcall(function()
+            local myChar = LocalPlayer.Character
+            if myChar then
+                local hum = myChar:FindFirstChildOfClass("Humanoid")
+                if hum then
+                    hum.Sit = false
+                    pcall(function() hum:ChangeState(Enum.HumanoidStateType.Running) end)
+                end
+            end
+        end)
+        if invisSeatState.weld and invisSeatState.weld.Parent then
+            invisSeatState.weld:Destroy()
+        end
+        invisSeatState.weld = nil
+        if invisSeatState.seat and invisSeatState.seat.Parent then
+            invisSeatState.seat:Destroy()
+        end
+        invisSeatState.seat = nil
+    end
+
+    local function startInvisSeat()
         local myChar = LocalPlayer.Character
-        if myChar then
-            local hum = myChar:FindFirstChildOfClass("Humanoid")
-            if hum then
-                hum.Sit = false
-                pcall(function() hum:ChangeState(Enum.HumanoidStateType.Running) end)
+        if not myChar then
+            notify("No character", "error", 2)
+            return false
+        end
+        local hrp = myChar:FindFirstChild("HumanoidRootPart")
+        local hum = myChar:FindFirstChildOfClass("Humanoid")
+        if not hrp or not hum then
+            notify("Character not fully loaded", "error", 2)
+            return false
+        end
+
+        stopInvisSeat()  -- clean up any previous
+
+        local seat = Instance.new("VehicleSeat")
+        seat.Name = "UA_InvisSeat"
+        seat.CFrame = hrp.CFrame * CFrame.new(0, -0.5, 0)
+        seat.Anchored = true
+        seat.CanCollide = false
+        seat.Transparency = 1
+        seat.Size = Vector3.new(0.001, 0.001, 0.001)
+        seat.Parent = workspace
+
+        if type(firetouchinterest) == "function" then
+            pcall(function()
+                firetouchinterest(hrp, seat, 0)
+                task.wait(0.15)
+                firetouchinterest(hrp, seat, 1)
+            end)
+        else
+            hum.Sit = true
+        end
+
+        task.wait(0.2)
+
+        for _, child in ipairs(seat:GetChildren()) do
+            if child:IsA("Weld") or child:IsA("WeldConstraint") then
+                child:Destroy()
             end
         end
-    end)
-    if invisSeatState.weld and invisSeatState.weld.Parent then
-        invisSeatState.weld:Destroy()
-    end
-    invisSeatState.weld = nil
-    if invisSeatState.seat and invisSeatState.seat.Parent then
-        invisSeatState.seat:Destroy()
-    end
-    invisSeatState.seat = nil
-end
+        for _, child in ipairs(hrp:GetChildren()) do
+            if child:IsA("Weld") and child.Name == "SeatWeld" then
+                child:Destroy()
+            end
+        end
 
-local function startInvisSeat()
-    local myChar = LocalPlayer.Character
-    if not myChar then
-        notify("No character", "error", 2)
-        return false
-    end
-    local hrp = myChar:FindFirstChild("HumanoidRootPart")
-    local hum = myChar:FindFirstChildOfClass("Humanoid")
-    if not hrp or not hum then
-        notify("Character not fully loaded", "error", 2)
-        return false
+        seat.Anchored = false
+        seat.CFrame = CFrame.new(0, 1e6, 0)
+
+        invisSeatState.seat = seat
+        invisSeatState.enabled = true
+        setToggleState("invis", true)
+        return true
     end
 
-    stopInvisSeat()  -- clean up any previous
-
-    -- Create a VehicleSeat AT the character's current position (not far away)
-    local seat = Instance.new("VehicleSeat")
-    seat.Name = "UA_InvisSeat"
-    seat.CFrame = hrp.CFrame * CFrame.new(0, -0.5, 0)
-    seat.Anchored = true   -- anchor first to prevent physics launch
-    seat.CanCollide = false
-    seat.Transparency = 1
-    seat.Size = Vector3.new(0.001, 0.001, 0.001)
-    seat.Parent = workspace
-
-    -- Try to properly trigger the sit via firetouchinterest (most executors support this)
-    if type(firetouchinterest) == "function" then
-        pcall(function()
-            firetouchinterest(hrp, seat, 0)  -- touch begin
-            task.wait(0.15)
-            firetouchinterest(hrp, seat, 1)  -- touch end
-        end)
-    else
-        -- Fallback: direct sit
-        hum.Sit = true
-    end
-
-    task.wait(0.2)
-
-    -- Remove engine-created SeatWeld so the character isn't locked to the seat
-    for _, child in ipairs(seat:GetChildren()) do
-        if child:IsA("Weld") or child:IsA("WeldConstraint") then
-            child:Destroy()
+    Commands["invis"].Execute = function()
+        if invisSeatState.enabled then
+            stopInvisSeat()
+            notify("Invisibility off", "info", 2)
+        else
+            if startInvisSeat() then
+                notify("Invisibility on (server-side)", "success", 2)
+            end
         end
     end
-    for _, child in ipairs(hrp:GetChildren()) do
-        if child:IsA("Weld") and child.Name == "SeatWeld" then
-            child:Destroy()
-        end
-    end
-
-    -- Now move seat far away — server thinks character is at the seat position
-    seat.Anchored = false
-    seat.CFrame = CFrame.new(0, 1e6, 0)
-
-    invisSeatState.seat = seat
-    invisSeatState.enabled = true
-    setToggleState("invis", true)
-    return true
-end
-
-Commands["invis"].Execute = function()
-    if invisSeatState.enabled then
-        stopInvisSeat()
-        notify("Invisibility off", "info", 2)
-    else
-        if startInvisSeat() then
-            notify("Invisibility on (server-side)", "success", 2)
-        end
-    end
-end
+end)()
 
 end -- do (new toggleable commands scope)
 
@@ -6505,7 +6533,7 @@ end
 -------------------------------------------------
 -- INVENTORY PANEL
 -------------------------------------------------
-(function()
+;(function()
     local inventoryPanel = createToolPanel({
         Name = "InventoryPanel",
         Title = "Inventory",
@@ -6849,7 +6877,8 @@ end)()
 -- via a UA_Present attribute for other script users (attribute
 -- replication is FE-dependent).
 -------------------------------------------------
-local nametagState = { tags = {}, knownPresent = {} }
+;(function()
+nametagState = { tags = {}, knownPresent = {} }
 
 local function removeNametag(player)
     local tag = nametagState.tags[player]
@@ -6870,8 +6899,8 @@ local function buildNametagGui()
     card.Name = "Card"
     card.Size = UDim2.new(1, -8, 1, -8)
     card.Position = UDim2.new(0, 4, 0, 4)
-    card.BackgroundColor3 = Color3.fromRGB(18, 18, 24)
-    card.BackgroundTransparency = 0.1
+    card.BackgroundColor3 = Color3.fromRGB(28, 26, 36)
+    card.BackgroundTransparency = 0
     card.BorderSizePixel = 0
     card.Parent = holder
 
@@ -6881,7 +6910,7 @@ local function buildNametagGui()
 
     local gradient = Instance.new("UIGradient")
     gradient.Color = ColorSequence.new({
-        ColorSequenceKeypoint.new(0, Color3.fromRGB(40, 30, 60)),
+        ColorSequenceKeypoint.new(0, Color3.fromRGB(28, 26, 36)),
         ColorSequenceKeypoint.new(1, Color3.fromRGB(18, 18, 24)),
     })
     gradient.Rotation = 90
@@ -6896,7 +6925,7 @@ local function buildNametagGui()
     local accent = Instance.new("Frame")
     accent.Name = "Accent"
     accent.AnchorPoint = Vector2.new(0.5, 0)
-    accent.Size = UDim2.new(1, -28, 0, 2)
+    accent.Size = UDim2.new(1, -10, 0, 2)
     accent.Position = UDim2.new(0.5, 0, 0, 0)
     accent.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
     accent.BorderSizePixel = 0
@@ -6915,40 +6944,58 @@ local function buildNametagGui()
     })
     accentGrad.Parent = accent
 
-    local iconFrame = Instance.new("Frame")
-    iconFrame.Name = "IconFrame"
-    iconFrame.Size = UDim2.new(0, 28, 0, 28)
-    iconFrame.Position = UDim2.new(0, 8, 0.5, -14)
-    iconFrame.BackgroundColor3 = Color3.fromRGB(99, 102, 241)
-    iconFrame.BackgroundTransparency = 0.15
-    iconFrame.BorderSizePixel = 0
-    iconFrame.Rotation = 45
-    iconFrame.Parent = card
-
-    local iconCorner = Instance.new("UICorner")
-    iconCorner.CornerRadius = UDim.new(0, 4)
-    iconCorner.Parent = iconFrame
-
-    local iconStroke = Instance.new("UIStroke")
-    iconStroke.Color = Color3.fromRGB(139, 92, 246)
-    iconStroke.Thickness = 1
-    iconStroke.Transparency = 0.2
-    iconStroke.Parent = iconFrame
-
-    local iconInner = Instance.new("TextLabel")
-    iconInner.Size = UDim2.new(1, 0, 1, 0)
+    local tagImageId = tonumber(CONFIG.UserTagImageId) or 0
+    local tagDecalId = tonumber(CONFIG.UserTagDecalId) or tonumber(CONFIG.AdminTopBarDecalId) or 0
+    local iconInner = Instance.new("ImageLabel")
+    iconInner.Size = UDim2.new(0, 40, 0, 40)
+    iconInner.AnchorPoint = Vector2.new(0, 0.5)
+    iconInner.Position = UDim2.new(0, 10, 0.5, 0)
     iconInner.BackgroundTransparency = 1
-    iconInner.Text = "U"
-    iconInner.TextColor3 = Color3.fromRGB(240, 240, 245)
-    iconInner.TextSize = 14
-    iconInner.Font = Enum.Font.GothamBold
-    iconInner.Rotation = -45
-    iconInner.Parent = iconFrame
+    iconInner.Rotation = 0
+    iconInner.ImageColor3 = Color3.fromRGB(240, 240, 245)
+    if tagImageId > 0 then
+        iconInner.Image = ("rbxthumb://type=Asset&id=%d&w=150&h=150"):format(tagImageId)
+    elseif tagDecalId > 0 then
+        iconInner.Image = ("rbxthumb://type=Asset&id=%d&w=150&h=150"):format(tagDecalId)
+    else
+        iconInner.Image = ""
+    end
+    iconInner.Parent = card
+
+    local iconFallback = Instance.new("TextLabel")
+    iconFallback.Size = iconInner.Size
+    iconFallback.AnchorPoint = iconInner.AnchorPoint
+    iconFallback.Position = iconInner.Position
+    iconFallback.BackgroundTransparency = 1
+    iconFallback.Text = "U"
+    iconFallback.TextColor3 = Color3.fromRGB(240, 240, 245)
+    iconFallback.TextSize = 18
+    iconFallback.Font = Enum.Font.GothamBold
+    iconFallback.Rotation = 0
+    iconFallback.Visible = (iconInner.Image == "")
+    iconFallback.Parent = card
+
+    if iconInner.Image ~= "" then
+        task.delay(1, function()
+            if iconInner and iconInner.Parent and not iconInner.IsLoaded then
+                if tagImageId > 0 then
+                    iconInner.Image = "rbxassetid://" .. tostring(tagImageId)
+                elseif tagDecalId > 0 then
+                    iconInner.Image = "rbxassetid://" .. tostring(tagDecalId)
+                end
+                task.delay(1, function()
+                    if iconInner and iconInner.Parent and not iconInner.IsLoaded and iconFallback then
+                        iconFallback.Visible = true
+                    end
+                end)
+            end
+        end)
+    end
 
     local topLabel = Instance.new("TextLabel")
     topLabel.Name = "TopLabel"
-    topLabel.Size = UDim2.new(1, -50, 0, 14)
-    topLabel.Position = UDim2.new(0, 44, 0, 4)
+    topLabel.Size = UDim2.new(1, -62, 0, 14)
+    topLabel.Position = UDim2.new(0, 52, 0, 4)
     topLabel.BackgroundTransparency = 1
     topLabel.Text = "STANDARD USER"
     topLabel.TextColor3 = Color3.fromRGB(139, 92, 246)
@@ -6959,8 +7006,8 @@ local function buildNametagGui()
 
     local nameLabel = Instance.new("TextLabel")
     nameLabel.Name = "NameLabel"
-    nameLabel.Size = UDim2.new(1, -50, 0, 18)
-    nameLabel.Position = UDim2.new(0, 44, 0, 18)
+    nameLabel.Size = UDim2.new(1, -62, 0, 18)
+    nameLabel.Position = UDim2.new(0, 52, 0, 18)
     nameLabel.BackgroundTransparency = 1
     nameLabel.Text = ""
     nameLabel.TextColor3 = Color3.fromRGB(240, 240, 245)
@@ -7007,7 +7054,7 @@ local function applyNametag(player)
     nametagState.tags[player] = gui
 end
 
-local function broadcastPresence()
+local function _broadcastPresence()
     local char = LocalPlayer.Character
     if not char then return end
     local hrp = char:FindFirstChild("HumanoidRootPart")
@@ -7019,7 +7066,7 @@ local function broadcastPresence()
     pcall(function() LocalPlayer:SetAttribute("UA_Tier", tostring(persistedConfig.accountTier or "Member")) end)
 end
 
-local function isScriptUser(player)
+local function _isScriptUser(player)
     if player == LocalPlayer then return true end
     local okP, present = pcall(function() return player:GetAttribute("UA_Present") end)
     if okP and present then return true end
@@ -7034,9 +7081,9 @@ local function isScriptUser(player)
     return false
 end
 
-local function refreshNametags()
+local function _refreshNametags()
     for _, player in ipairs(Players:GetPlayers()) do
-        if isScriptUser(player) then
+        if _isScriptUser(player) then
             if not nametagState.tags[player] and player.Character then
                 applyNametag(player)
             end
@@ -7057,24 +7104,24 @@ local function watchPlayer(player)
     player.CharacterAdded:Connect(function(char)
         char:WaitForChild("Head", 10)
         task.wait(0.2)
-        if player == LocalPlayer then broadcastPresence() end
-        if isScriptUser(player) then
+        if player == LocalPlayer then _broadcastPresence() end
+        if _isScriptUser(player) then
             applyNametag(player)
         end
     end)
     player.AttributeChanged:Connect(function(attr)
-        if attr == "UA_Present" then refreshNametags() end
+        if attr == "UA_Present" then _refreshNametags() end
     end)
     if player.Character then
-        if player == LocalPlayer then broadcastPresence() end
-        if isScriptUser(player) then
+        if player == LocalPlayer then _broadcastPresence() end
+        if _isScriptUser(player) then
             applyNametag(player)
         end
     end
 end
 
 for _, p in ipairs(Players:GetPlayers()) do
-    if p ~= LocalPlayer and isScriptUser(p) then
+    if p ~= LocalPlayer and _isScriptUser(p) then
         nametagState.knownPresent[p.UserId] = true
     end
 end
@@ -7091,6 +7138,10 @@ Players.PlayerRemoving:Connect(function(p)
     removeNametag(p)
     nametagState.knownPresent[p.UserId] = nil
 end)
+
+broadcastPresence = _broadcastPresence
+refreshNametags = _refreshNametags
+end)()
 
 -- Respawn handler: clean up fly/noclip on death
 LocalPlayer.CharacterAdded:Connect(function()
@@ -7183,6 +7234,8 @@ local function createSuggestionEntry(cmd, index)
     })
 
     local rightEdge = -12
+    local isPremiumLocked = cmd.Premium and not hasTierAtLeast("Premium")
+    local baseBgColor = Theme.Surface
 
     -- ON badge if the command is currently toggled on
     if getToggleState and getToggleState(cmd.Name) then
@@ -7216,6 +7269,7 @@ local function createSuggestionEntry(cmd, index)
             Theme.Surface.G + 0.08,
             Theme.Surface.B + 0.05
         )
+        baseBgColor = entry.BackgroundColor3
         cmdLabel.TextColor3 = Theme.Success
         rightEdge = rightEdge - 34
     end
@@ -7223,6 +7277,64 @@ local function createSuggestionEntry(cmd, index)
     if cmd.Local then
         createLocalBadge(entry, rightEdge - 44)
         rightEdge = rightEdge - 50
+    end
+    if isPremiumLocked then
+        local lockColor = Color3.fromRGB(130, 130, 130)
+        create("Frame", {
+            Name = "LockBadge",
+            Size = UDim2.new(0, 64, 0, 16),
+            Position = UDim2.new(0.5, -32, 0, 6),
+            BackgroundColor3 = lockColor,
+            BackgroundTransparency = 0.78,
+            BorderSizePixel = 0,
+            Parent = entry,
+        }, {
+            create("UICorner", { CornerRadius = UDim.new(0, 4) }),
+            create("UIStroke", {
+                Color = lockColor,
+                Thickness = 1,
+                Transparency = 0.25,
+            }),
+            create("TextLabel", {
+                Size = UDim2.new(1, 0, 1, 0),
+                BackgroundTransparency = 1,
+                Text = "LOCK",
+                TextColor3 = lockColor,
+                TextSize = 9,
+                Font = Theme.FontBold,
+            }),
+        })
+        entry.BackgroundColor3 = Color3.fromRGB(30, 30, 36)
+        baseBgColor = entry.BackgroundColor3
+        cmdLabel.TextColor3 = Theme.TextDim
+    end
+    if cmd.Premium then
+        local premiumColor = Color3.fromRGB(245, 183, 66)
+        create("Frame", {
+            Name = "PremiumBadge",
+            Size = UDim2.new(0, 56, 0, 16),
+            Position = UDim2.new(1, rightEdge - 56, 0, 6),
+            BackgroundColor3 = premiumColor,
+            BackgroundTransparency = 0.78,
+            BorderSizePixel = 0,
+            Parent = entry,
+        }, {
+            create("UICorner", { CornerRadius = UDim.new(0, 4) }),
+            create("UIStroke", {
+                Color = premiumColor,
+                Thickness = 1,
+                Transparency = 0.25,
+            }),
+            create("TextLabel", {
+                Size = UDim2.new(1, 0, 1, 0),
+                BackgroundTransparency = 1,
+                Text = "PREMIUM",
+                TextColor3 = premiumColor,
+                TextSize = 9,
+                Font = Theme.FontBold,
+            }),
+        })
+        rightEdge = rightEdge - 62
     end
 
     if cmd.Aliases and #cmd.Aliases > 0 then
@@ -7247,7 +7359,7 @@ local function createSuggestionEntry(cmd, index)
     end)
     entry.InputEnded:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseMovement then
-            tween(entry, quickTween, { BackgroundColor3 = Theme.Surface })
+            tween(entry, quickTween, { BackgroundColor3 = baseBgColor })
         end
     end)
 
@@ -7268,6 +7380,7 @@ end
 -- UI STATE MANAGEMENT
 -- NOTE: isOpen, openUI, closeUI, toggleUI are forward-declared at the top
 -------------------------------------------------
+;(function()
 local expandedHeight = 380
 
 local function clearResults()
@@ -7403,7 +7516,7 @@ local function refreshToggleStates()
     -- Note: clicktp/fullbright/remotespy/antiafk set their own via setToggleState
 end
 
-local function populateSuggestions(query)
+populateSuggestions = function(query)
     clearResults()
     refreshToggleStates()
 
@@ -7456,6 +7569,41 @@ local function populateSuggestions(query)
     end
 
     local matches = getMatchingCommands(query)
+    if not hasTierAtLeast("Premium") then
+        local promoNames = { "loopfling", "uabbring" }
+        local promo = {}
+        local seen = {}
+        for _, c in ipairs(matches) do
+            seen[c.Name] = true
+        end
+        for _, name in ipairs(promoNames) do
+            local cmd = Commands[name]
+            if cmd and cmd.Premium then
+                local q = tostring(query or ""):lower()
+                local show = (q == "")
+                    or cmd.Name:lower():find(q, 1, true)
+                    or tostring(cmd.Description or ""):lower():find(q, 1, true)
+                if show then
+                    table.insert(promo, cmd)
+                    seen[cmd.Name] = true
+                end
+            end
+        end
+        if #promo > 0 then
+            local filtered = {}
+            local promoSet = {}
+            for _, c in ipairs(promo) do promoSet[c.Name] = true end
+            for _, c in ipairs(matches) do
+                if not promoSet[c.Name] then
+                    table.insert(filtered, c)
+                end
+            end
+            matches = promo
+            for _, c in ipairs(filtered) do
+                table.insert(matches, c)
+            end
+        end
+    end
 
     if #matches == 0 then
         -- "No commands found" message
@@ -7553,6 +7701,7 @@ if topBarButtons["Settings"] then
         end
     end)
 end
+end)()
 
 -------------------------------------------------
 -- INPUT HANDLING
@@ -7739,6 +7888,7 @@ end)
 -------------------------------------------------
 -- CHAT HOOK (intercept ; prefix in chat)
 -------------------------------------------------
+;(function()
 local function hookChat()
     -- Wait for the chat system to load
     local chatBar = nil
@@ -7817,49 +7967,38 @@ hookChat()
 -------------------------------------------------
 -- TEXT CHAT SERVICE HOOK (new chat system)
 -------------------------------------------------
-local function hookTextChatService()
-    local success, TextChatService = pcall(function()
+;(function()
+    local okSvc, textSvc = pcall(function()
         return game:GetService("TextChatService")
     end)
-    if not success or not TextChatService then return end
-
-    local function onSendingMessage(msg)
-        if msg and msg.Text and msg.Text:sub(1, #CONFIG.Prefix) == CONFIG.Prefix then
-            local cmdText = msg.Text:sub(#CONFIG.Prefix + 1)
-            if cmdText ~= "" then
-                local ok, result = executeCommand(cmdText)
-                if ok then
-                    notify(result, "success")
-                else
-                    notify(result, "error")
-                end
-            end
-        end
+    if not okSvc or not textSvc then
+        return nil
     end
-
-    -- Hook into TextChatService SendAsync
     pcall(function()
-        local channel = TextChatService:WaitForChild("TextChannels", 5)
-        if channel then
-            local rbxGeneral = channel:FindFirstChild("RBXGeneral")
-            if rbxGeneral then
-                rbxGeneral.ShouldDeliverCallback = function(msg)
-                    if msg.Text:sub(1, #CONFIG.Prefix) == CONFIG.Prefix then
-                        onSendingMessage(msg)
-                        return false -- don't send to chat
-                    end
-                    return true
+        local channels = textSvc:WaitForChild("TextChannels", 5)
+        local general = channels and channels:FindFirstChild("RBXGeneral")
+        if not general then
+            return
+        end
+        general.ShouldDeliverCallback = function(msg)
+            if msg and msg.Text and msg.Text:sub(1, #CONFIG.Prefix) == CONFIG.Prefix then
+                local cmdText = msg.Text:sub(#CONFIG.Prefix + 1)
+                if cmdText ~= "" then
+                    local okExec, result = executeCommand(cmdText)
+                    notify(result, okExec and "success" or "error")
                 end
+                return false
             end
+            return true
         end
     end)
-end
-
-hookTextChatService()
+end)()
+end)()
 
 -------------------------------------------------
 -- DRAGGABLE UI (unified system)
 -------------------------------------------------
+;(function()
 makeDraggable(HeaderFrame, MainFrame)
 
 UserInputService.InputChanged:Connect(function(input)
@@ -7894,6 +8033,7 @@ end)
 -- flash for a frame while the welcome-back or login UI is preparing.
 ScreenGui.Enabled = false
 Backdrop.Visible = false
+end)()
 
 -------------------------------------------------
 -- LOGIN SCREEN
@@ -7924,6 +8064,7 @@ local function clearSavedLogin()
     persistedConfig.loginKey = nil
     persistedConfig.authToken = nil
     persistedConfig.accountTier = nil
+    persistedConfig.accountExpiresAt = nil
     savePersistedConfig()
 end
 
@@ -8221,6 +8362,9 @@ local function refreshAuthTokenViaSavedKey()
         persistedConfig.authToken = data.token
         if data.tier then
             persistedConfig.accountTier = data.tier
+        end
+        if data.expiresAt then
+            persistedConfig.accountExpiresAt = tostring(data.expiresAt)
         end
         savePersistedConfig()
         pcall(function()
@@ -8876,6 +9020,7 @@ local function loginRunAuthRequest(L, onSuccess, user, pass)
     persistedConfig.loginUser = user
     persistedConfig.loginKey = tostring(authResult.key or "")
     persistedConfig.accountTier = authResult.tier or "Member"
+    persistedConfig.accountExpiresAt = authResult.expiresAt and tostring(authResult.expiresAt) or nil
     if type(authResult.token) == "string" and authResult.token ~= "" then
         persistedConfig.authToken = authResult.token
     end
@@ -9010,7 +9155,7 @@ local function revealMainUI(username)
         or (username or LocalPlayer.DisplayName)
 
     if AccountTypeLabel then
-        AccountTypeLabel.Text = tierToDisplayLabel(persistedConfig.accountTier)
+        AccountTypeLabel.Text = formatTierWithRemaining(persistedConfig.accountTier, persistedConfig.accountExpiresAt)
     end
 
     ScreenGui.Enabled = true
@@ -9175,6 +9320,9 @@ end
                 if data and data.ok == true then
                     if data.tier then
                         persistedConfig.accountTier = data.tier
+                    end
+                    if data.expiresAt then
+                        persistedConfig.accountExpiresAt = tostring(data.expiresAt)
                     end
                     if type(data.token) == "string" and data.token ~= "" then
                         persistedConfig.authToken = data.token
