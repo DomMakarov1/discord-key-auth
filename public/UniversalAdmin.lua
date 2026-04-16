@@ -6395,15 +6395,24 @@ end
                 table.insert(items, { id = id, kind = kind or "Item" })
             end
         end
+        local function safeField(field)
+            local ok, value = pcall(function()
+                return desc[field]
+            end)
+            if ok then
+                return value
+            end
+            return nil
+        end
         local function pushCsv(field, kind)
-            for _, id in ipairs(splitCsvIds(desc[field])) do
+            for _, id in ipairs(splitCsvIds(safeField(field))) do
                 pushId(id, kind)
             end
         end
-        pushId(desc.Shirt, "Shirt")
-        pushId(desc.Pants, "Pants")
-        pushId(desc.GraphicTShirt, "T-Shirt")
-        pushId(desc.Face, "Face")
+        pushId(safeField("Shirt"), "Shirt")
+        pushId(safeField("Pants"), "Pants")
+        pushId(safeField("GraphicTShirt"), "T-Shirt")
+        pushId(safeField("Face"), "Face")
         pushCsv("HatAccessory", "Hat")
         pushCsv("HairAccessory", "Hair")
         pushCsv("FaceAccessory", "Face Accessory")
