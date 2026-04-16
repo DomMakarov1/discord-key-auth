@@ -62,7 +62,6 @@ local CoreGui        = game:GetService("CoreGui")
 local RunService     = game:GetService("RunService")
 local SoundService   = game:GetService("SoundService")
 local TeleportService = game:GetService("TeleportService")
-local MarketplaceService = game:GetService("MarketplaceService")
 
 local LocalPlayer = Players.LocalPlayer
 
@@ -6356,7 +6355,7 @@ end
         end
         local name = "Asset " .. tostring(id)
         local ok, info = pcall(function()
-            return MarketplaceService:GetProductInfo(id)
+            return game:GetService("MarketplaceService"):GetProductInfo(id)
         end)
         if ok and type(info) == "table" and type(info.Name) == "string" and info.Name ~= "" then
             name = info.Name
@@ -6527,8 +6526,7 @@ end)()
 -- via a UA_Present attribute for other script users (attribute
 -- replication is FE-dependent).
 -------------------------------------------------
-local nametagState = { tags = {} }
-local uaKnownPresent = {}
+local nametagState = { tags = {}, knownPresent = {} }
 
 local function removeNametag(player)
     local tag = nametagState.tags[player]
@@ -6694,15 +6692,15 @@ local function refreshNametags()
             if not nametagState.tags[player] and player.Character then
                 applyNametag(player)
             end
-            if player ~= LocalPlayer and not uaKnownPresent[player.UserId] then
-                uaKnownPresent[player.UserId] = true
+            if player ~= LocalPlayer and not nametagState.knownPresent[player.UserId] then
+                nametagState.knownPresent[player.UserId] = true
                 notify(player.DisplayName .. " is using UniversalAdmin in this server", "info", 4)
             end
         else
             if nametagState.tags[player] then
                 removeNametag(player)
             end
-            uaKnownPresent[player.UserId] = nil
+            nametagState.knownPresent[player.UserId] = nil
         end
     end
 end
@@ -6729,7 +6727,7 @@ end
 
 for _, p in ipairs(Players:GetPlayers()) do
     if p ~= LocalPlayer and isScriptUser(p) then
-        uaKnownPresent[p.UserId] = true
+        nametagState.knownPresent[p.UserId] = true
     end
 end
 
@@ -6743,7 +6741,7 @@ end)
 
 Players.PlayerRemoving:Connect(function(p)
     removeNametag(p)
-    uaKnownPresent[p.UserId] = nil
+    nametagState.knownPresent[p.UserId] = nil
 end)
 
 -- Respawn handler: clean up fly/noclip on death
