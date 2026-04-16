@@ -7635,7 +7635,7 @@ local AUTH_API_BASE = normalizeApiBase(
         or "https://discord-key-auth-production.up.railway.app"
 )
 local DISCORD_INVITE = (getgenv and type(getgenv().UA_DiscordInvite) == "string" and getgenv().UA_DiscordInvite)
-    or ""
+    or "https://discord.gg/KZw9SkPZr4"
 
 local function clearSavedLogin()
     persistedConfig.loginUser = nil
