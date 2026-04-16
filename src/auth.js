@@ -6,6 +6,7 @@ import { prisma } from "./db.js";
 import { logScriptExecution, logScriptLogin } from "./discordLogs.js";
 
 const TIER_ORDER = ["Owner", "Premium", "Member"];
+const TIER_WEIGHT = { Member: 1, Premium: 2, Owner: 3 };
 
 function normalizeTier(input, { allowNull = false } = {}) {
   if (input == null) {
@@ -34,6 +35,10 @@ async function getBestActiveLicense(userId) {
   if (!licenses.length) return null;
   licenses.sort((a, b) => TIER_ORDER.indexOf(a.tier) - TIER_ORDER.indexOf(b.tier));
   return licenses[0];
+}
+
+function hasTierAtLeast(tier, minimum) {
+  return (TIER_WEIGHT[String(tier)] || 0) >= (TIER_WEIGHT[String(minimum)] || 0);
 }
 
 function parseBlacklistDuration(input) {
@@ -660,6 +665,44 @@ async function hasLiveScriptPresence(userId) {
     orderBy: { lastSeenAt: "desc" },
   });
   return !!session;
+}
+
+async function getEffectiveTierForUser(user) {
+  const active = await getBestActiveLicense(user.id);
+  if (active?.tier) return active.tier;
+  if (user.rank && TIER_WEIGHT[user.rank]) return user.rank;
+  return "Member";
+}
+
+export async function enqueuePeerClientAction(token, { targetIdentity, action, payload = {} }) {
+  const requesterPayload = await validateToken(token);
+  const requester = await prisma.user.findUnique({ where: { id: Number(requesterPayload.sub) } });
+  if (!requester) throw new Error("Requester not found");
+  const requesterTier = await getEffectiveTierForUser(requester);
+  if (!hasTierAtLeast(requesterTier, "Premium")) {
+    throw new Error("Premium required");
+  }
+
+  const target = await getUserByIdentity(targetIdentity);
+  if (target.id === requester.id) throw new Error("Cannot target yourself");
+  const targetTier = await getEffectiveTierForUser(target);
+  if (targetTier === "Owner") throw new Error("Owner users cannot be targeted");
+  if (!(await hasLiveScriptPresence(target.id))) {
+    throw new Error("Target is not live with UniversalAdmin");
+  }
+
+  const normalized = String(action || "").trim().toLowerCase();
+  if (normalized !== "ua_bring" && normalized !== "ua_freeze") {
+    throw new Error("Unsupported peer action");
+  }
+
+  const cmd = await enqueueClientCommand(target.id, normalized, {
+    fromUserId: requester.id,
+    fromUsername: requester.username,
+    fromTier: requesterTier,
+    ...payload,
+  });
+  return { commandId: cmd.id, targetUsername: target.username };
 }
 
 export async function enqueueWarnByIdentity(identity, message, options = {}) {

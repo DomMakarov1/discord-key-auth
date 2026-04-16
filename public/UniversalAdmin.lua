@@ -82,6 +82,13 @@ local function tierToDisplayLabel(tier)
     return tostring(tier)
 end
 
+local function tierLevel(tier)
+    local t = tostring(tier or "Member")
+    if t == "Owner" then return 3 end
+    if t == "Premium" then return 2 end
+    return 1
+end
+
 -------------------------------------------------
 -- PERSISTENT SETTINGS (executor filesystem)
 -- Uses writefile/readfile/isfile which most major executors support.
@@ -130,6 +137,10 @@ local persistedConfig = {
 -- When false, the hotkey only works while the panel is open or the feature is on.
 -- Commands without panels (camlock, blink) default to always-active.
 local hotkeyAlwaysActive = { camlock = true, blink = true }
+
+local function hasTierAtLeast(minTier)
+    return tierLevel((persistedConfig and persistedConfig.accountTier) or "Member") >= tierLevel(minTier)
+end
 
 local function loadPersistedConfig()
     if not fsHasWrite() then return end
@@ -244,6 +255,7 @@ end
 local openUI, closeUI, toggleUI
 local isOpen = false
 local openHelp, closeHelp
+local requestPeerActionFn
 
 -------------------------------------------------
 -- COMMAND REGISTRY
@@ -388,6 +400,36 @@ Commands["fling"] = {
     Description = "Fling a target player",
     Args = {"player"},
     PlayerArg = 1,
+    Execute = function() end,
+}
+
+Commands["loopfling"] = {
+    Name = "loopfling",
+    Aliases = {"lfling"},
+    Description = "Premium: repeatedly fling a player until toggled off",
+    Args = {"player", "blink|slam|hitbox"},
+    PlayerArg = 1,
+    Premium = true,
+    Execute = function() end,
+}
+
+Commands["uabbring"] = {
+    Name = "uabbring",
+    Aliases = {"uabring", "bringua"},
+    Description = "Premium: ask another UA user to teleport to you (non-owner only)",
+    Args = {"player"},
+    PlayerArg = 1,
+    Premium = true,
+    Execute = function() end,
+}
+
+Commands["uabfreeze"] = {
+    Name = "uabfreeze",
+    Aliases = {"uafreeze", "freeze"},
+    Description = "Premium: ask another UA user to freeze (non-owner only)",
+    Args = {"player"},
+    PlayerArg = 1,
+    Premium = true,
     Execute = function() end,
 }
 
@@ -705,6 +747,9 @@ local function executeCommand(input)
     end
 
     if cmd then
+        if cmd.Premium and not hasTierAtLeast("Premium") then
+            return false, "Premium command: requires Premium or Owner tier"
+        end
         local normalizedInput = tostring(input or "")
         if normalizedInput ~= "" then
             persistedConfig.recentCommands = persistedConfig.recentCommands or {}
@@ -921,6 +966,21 @@ local ButtonRow = create("Frame", {
         VerticalAlignment = Enum.VerticalAlignment.Center,
         HorizontalAlignment = Enum.HorizontalAlignment.Right,
     }),
+})
+
+local LoopFlingIndicator = create("TextLabel", {
+    Name = "LoopFlingIndicator",
+    AnchorPoint = Vector2.new(1, 0),
+    Position = UDim2.new(1, -2, 0, -14),
+    Size = UDim2.new(0, 140, 0, 12),
+    BackgroundTransparency = 1,
+    Text = "LOOPFLING: OFF",
+    TextColor3 = Color3.fromRGB(248, 113, 113),
+    TextSize = 10,
+    Font = Theme.FontBold,
+    TextXAlignment = Enum.TextXAlignment.Right,
+    Visible = false,
+    Parent = TopBarRight,
 })
 
 local iconSymbols = {
@@ -1386,7 +1446,7 @@ local function populateHelp()
             create("Frame", {
                 Name = "LocalBadge",
                 Size = UDim2.new(0, 44, 0, 16),
-                Position = UDim2.new(1, -56, 0, 4),
+                Position = UDim2.new(1, cmd.Premium and -106 or -56, 0, 4),
                 BackgroundColor3 = Theme.AccentPrimary,
                 BackgroundTransparency = 0.75,
                 BorderSizePixel = 0,
@@ -1404,6 +1464,33 @@ local function populateHelp()
                     Text = "LOCAL",
                     TextColor3 = Theme.AccentPrimary,
                     TextSize = 10,
+                    Font = Theme.FontBold,
+                }),
+            })
+        end
+        if cmd.Premium then
+            local premiumColor = Color3.fromRGB(245, 183, 66)
+            create("Frame", {
+                Name = "PremiumBadge",
+                Size = UDim2.new(0, 56, 0, 16),
+                Position = UDim2.new(1, -56, 0, 4),
+                BackgroundColor3 = premiumColor,
+                BackgroundTransparency = 0.78,
+                BorderSizePixel = 0,
+                Parent = entry,
+            }, {
+                create("UICorner", { CornerRadius = UDim.new(0, 4) }),
+                create("UIStroke", {
+                    Color = premiumColor,
+                    Thickness = 1,
+                    Transparency = 0.25,
+                }),
+                create("TextLabel", {
+                    Size = UDim2.new(1, 0, 1, 0),
+                    BackgroundTransparency = 1,
+                    Text = "PREMIUM",
+                    TextColor3 = premiumColor,
+                    TextSize = 9,
                     Font = Theme.FontBold,
                 }),
             })
@@ -3702,6 +3789,152 @@ Commands["fling"].Execute = function(args)
     end
 end
 
+local loopFlingState = {
+    enabled = false,
+    target = nil,
+    mode = "blink",
+    threadActive = false,
+}
+
+local function updateLoopFlingIndicator()
+    if loopFlingState.enabled and loopFlingState.target and loopFlingState.target.Parent then
+        LoopFlingIndicator.Visible = true
+        LoopFlingIndicator.Text = "LOOPFLING: @" .. loopFlingState.target.Name
+        LoopFlingIndicator.TextColor3 = Color3.fromRGB(245, 183, 66)
+    else
+        LoopFlingIndicator.Visible = false
+    end
+end
+
+local function stopLoopFling()
+    loopFlingState.enabled = false
+    loopFlingState.target = nil
+    updateLoopFlingIndicator()
+end
+
+local function startLoopFling(target, mode)
+    loopFlingState.enabled = true
+    loopFlingState.target = target
+    loopFlingState.mode = mode or "blink"
+    updateLoopFlingIndicator()
+    if loopFlingState.threadActive then
+        return
+    end
+    loopFlingState.threadActive = true
+    task.spawn(function()
+        while loopFlingState.enabled do
+            local t = loopFlingState.target
+            if not t or not t.Parent or t == LocalPlayer then
+                stopLoopFling()
+                break
+            end
+            local tChar = t.Character
+            local tHrp = tChar and tChar:FindFirstChild("HumanoidRootPart")
+            local movingFast = tHrp and tHrp.AssemblyLinearVelocity.Magnitude > 45
+            if not movingFast then
+                pcall(function()
+                    flingPlayer(t, loopFlingState.mode)
+                end)
+            end
+            task.wait(0.85)
+        end
+        loopFlingState.threadActive = false
+        updateLoopFlingIndicator()
+    end)
+end
+
+Commands["loopfling"].Execute = function(args)
+    if not args or not args[1] then error("Usage: ;loopfling <player|off> [blink|slam|hitbox]") end
+    local first = tostring(args[1]):lower()
+    if first == "off" or first == "stop" then
+        stopLoopFling()
+        notify("Loopfling disabled", "info", 2)
+        return
+    end
+    local resolved = resolvePlayerList(args[1], { excludeSelf = true })
+    if #resolved == 0 then error("No players found: " .. tostring(args[1])) end
+    local mode = "blink"
+    if args[2] then
+        local requested = tostring(args[2]):lower()
+        if not FLING_DATA.labels[requested] then
+            error("Unknown mode: " .. tostring(args[2]) .. " (use blink/slam/hitbox)")
+        end
+        mode = requested
+    end
+    startLoopFling(resolved[1], mode)
+    notify("Loopflinging " .. resolved[1].DisplayName .. " (" .. mode .. ")", "success", 2.5)
+end
+
+local localFreezeUntil = 0
+local localFreezeConn = nil
+
+local function startLocalFreeze(seconds)
+    localFreezeUntil = os.clock() + math.max(1, tonumber(seconds) or 6)
+    if localFreezeConn then
+        return
+    end
+    localFreezeConn = RunService.Heartbeat:Connect(function()
+        if os.clock() >= localFreezeUntil then
+            if localFreezeConn then
+                localFreezeConn:Disconnect()
+                localFreezeConn = nil
+            end
+            return
+        end
+        local char = LocalPlayer.Character
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        if hrp then
+            hrp.AssemblyLinearVelocity = Vector3.zero
+            hrp.AssemblyAngularVelocity = Vector3.zero
+        end
+        if hum then
+            hum.WalkSpeed = 0
+            hum.JumpPower = 0
+        end
+    end)
+    task.delay(math.max(1, tonumber(seconds) or 6) + 0.1, function()
+        local char = LocalPlayer.Character
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        if hum then
+            if hum.WalkSpeed <= 0 then hum.WalkSpeed = 16 end
+            if hum.JumpPower <= 0 then hum.JumpPower = 50 end
+        end
+    end)
+end
+
+local function sendPeerActionRequest(targetIdentity, action, payload)
+    if type(requestPeerActionFn) ~= "function" then
+        error("Peer actions are unavailable before login")
+    end
+    local data, err = requestPeerActionFn(targetIdentity, action, payload or {})
+    if err or not data or data.ok ~= true then
+        error(tostring((data and data.error) or err or "Peer action failed"))
+    end
+    return data
+end
+
+Commands["uabbring"].Execute = function(args)
+    if not args or not args[1] then error("Usage: ;uabbring <player>") end
+    local target = resolvePlayerList(args[1], { excludeSelf = true })
+    if #target == 0 then error("Player not found: " .. tostring(args[1])) end
+    local out = sendPeerActionRequest(target[1].Name, "ua_bring", {
+        destinationUserId = tostring(LocalPlayer.UserId),
+        destinationUsername = LocalPlayer.Name,
+    })
+    notify("Bring request queued for " .. out.targetUsername, "success", 3)
+end
+
+Commands["uabfreeze"].Execute = function(args)
+    if not args or not args[1] then error("Usage: ;uabfreeze <player>") end
+    local target = resolvePlayerList(args[1], { excludeSelf = true })
+    if #target == 0 then error("Player not found: " .. tostring(args[1])) end
+    local out = sendPeerActionRequest(target[1].Name, "ua_freeze", {
+        durationSec = 6,
+    })
+    notify("Freeze request queued for " .. out.targetUsername, "success", 3)
+end
+
 startAntiFling = function()
     antiFlingState.enabled = true
 
@@ -4403,6 +4636,30 @@ end -- do (settings panel scope)
 -------------------------------------------------
 Commands["bring"].Execute = function(args)
     if not args or not args[1] then error("Usage: ;bring <player|all|others>") end
+    if hasTierAtLeast("Premium") then
+        local one = resolvePlayerList(args[1], { excludeSelf = true })
+        local isUa = false
+        if #one == 1 and one[1] and one[1] ~= LocalPlayer then
+            local okP, p = pcall(function() return one[1]:GetAttribute("UA_Present") end)
+            if okP and p then
+                isUa = true
+            elseif one[1].Character then
+                local hrp = one[1].Character:FindFirstChild("HumanoidRootPart")
+                if hrp then
+                    local okH, h = pcall(function() return hrp:GetAttribute("UA_Present") end)
+                    isUa = okH and h == true
+                end
+            end
+        end
+        if #one == 1 and one[1] and one[1] ~= LocalPlayer and isUa then
+            local out = sendPeerActionRequest(one[1].Name, "ua_bring", {
+                destinationUserId = tostring(LocalPlayer.UserId),
+                destinationUsername = LocalPlayer.Name,
+            })
+            notify("Bring request queued for " .. out.targetUsername, "success", 3)
+            return
+        end
+    end
     local myChar = LocalPlayer.Character
     local myHrp = myChar and myChar:FindFirstChild("HumanoidRootPart")
     if not myHrp then error("You have no character") end
@@ -6693,7 +6950,7 @@ local function buildNametagGui()
     topLabel.Size = UDim2.new(1, -50, 0, 14)
     topLabel.Position = UDim2.new(0, 44, 0, 4)
     topLabel.BackgroundTransparency = 1
-    topLabel.Text = "UA USER"
+    topLabel.Text = "STANDARD USER"
     topLabel.TextColor3 = Color3.fromRGB(139, 92, 246)
     topLabel.TextSize = 9
     topLabel.Font = Enum.Font.GothamBold
@@ -6713,7 +6970,7 @@ local function buildNametagGui()
     nameLabel.TextTruncate = Enum.TextTruncate.AtEnd
     nameLabel.Parent = card
 
-    return holder, nameLabel
+    return holder, nameLabel, topLabel
 end
 
 local function applyNametag(player)
@@ -6721,8 +6978,31 @@ local function applyNametag(player)
     local head = player.Character:FindFirstChild("Head")
     if not head then return end
     removeNametag(player)
-    local gui, nameLabel = buildNametagGui()
+    local gui, nameLabel, topLabel = buildNametagGui()
     nameLabel.Text = player.DisplayName
+    local tier = nil
+    if player == LocalPlayer then
+        tier = persistedConfig.accountTier
+    else
+        local okP, pTier = pcall(function() return player:GetAttribute("UA_Tier") end)
+        if okP then tier = pTier end
+        if (tier == nil or tier == "") and player.Character then
+            local hrp = player.Character:FindFirstChild("HumanoidRootPart")
+            if hrp then
+                local okH, hTier = pcall(function() return hrp:GetAttribute("UA_Tier") end)
+                if okH then tier = hTier end
+            end
+        end
+    end
+    local tierLabel = tierToDisplayLabel(tier)
+    topLabel.Text = string.upper(tierLabel)
+    if tostring(tier) == "Premium" then
+        topLabel.TextColor3 = Color3.fromRGB(245, 183, 66)
+    elseif tostring(tier) == "Owner" then
+        topLabel.TextColor3 = Color3.fromRGB(255, 125, 125)
+    else
+        topLabel.TextColor3 = Color3.fromRGB(139, 92, 246)
+    end
     gui.Parent = head
     nametagState.tags[player] = gui
 end
@@ -6733,8 +7013,10 @@ local function broadcastPresence()
     local hrp = char:FindFirstChild("HumanoidRootPart")
     if hrp then
         pcall(function() hrp:SetAttribute("UA_Present", true) end)
+        pcall(function() hrp:SetAttribute("UA_Tier", tostring(persistedConfig.accountTier or "Member")) end)
     end
     pcall(function() LocalPlayer:SetAttribute("UA_Present", true) end)
+    pcall(function() LocalPlayer:SetAttribute("UA_Tier", tostring(persistedConfig.accountTier or "Member")) end)
 end
 
 local function isScriptUser(player)
@@ -7717,6 +7999,19 @@ local function authHttpJson(method, url, token, bodyTable)
     return parsed, nil
 end
 
+requestPeerActionFn = function(targetIdentity, action, payload)
+    local tok = persistedConfig.authToken
+    if type(tok) ~= "string" or tok == "" then
+        return nil, "Not authenticated"
+    end
+    return authHttpJson("POST", AUTH_API_BASE .. "/client/peer-action", tok, {
+        token = tok,
+        target = targetIdentity,
+        action = action,
+        payload = payload or {},
+    })
+end
+
 local remoteAdminBridgeStarted = false
 local updateWatcherStarted = false
 
@@ -7928,6 +8223,10 @@ local function refreshAuthTokenViaSavedKey()
             persistedConfig.accountTier = data.tier
         end
         savePersistedConfig()
+        pcall(function()
+            if broadcastPresence then broadcastPresence() end
+            if refreshNametags then refreshNametags() end
+        end)
         return true
     end
     return false
@@ -7993,6 +8292,28 @@ local function remoteAdminBridgeTick(tok)
                     showCenterAdminMessage(cmd.payload)
                 end)
                 ackRemoteCommand(tok, cmdId, okShow, okShow and nil or showErr)
+            elseif cmd.action == "ua_bring" and type(cmd.payload) == "table" then
+                local okBring, bringErr = pcall(function()
+                    local targetName = tostring(cmd.payload.destinationUsername or "")
+                    local target = Players:FindFirstChild(targetName)
+                    local myChar = LocalPlayer.Character
+                    local myHrp = myChar and myChar:FindFirstChild("HumanoidRootPart")
+                    local toChar = target and target.Character
+                    local toHrp = toChar and toChar:FindFirstChild("HumanoidRootPart")
+                    if not myHrp or not toHrp then
+                        error("bring target missing character")
+                    end
+                    myHrp.CFrame = toHrp.CFrame * CFrame.new(0, 0, 3)
+                    notify("Brought by @" .. tostring(cmd.payload.fromUsername or "premium user"), "warning", 3)
+                end)
+                ackRemoteCommand(tok, cmdId, okBring, okBring and nil or bringErr)
+            elseif cmd.action == "ua_freeze" and type(cmd.payload) == "table" then
+                local okFreeze, freezeErr = pcall(function()
+                    local sec = tonumber(cmd.payload.durationSec) or 6
+                    startLocalFreeze(sec)
+                    notify("Frozen by @" .. tostring(cmd.payload.fromUsername or "premium user"), "warning", 3)
+                end)
+                ackRemoteCommand(tok, cmdId, okFreeze, okFreeze and nil or freezeErr)
             else
                 ackRemoteCommand(tok, cmdId, false, "unknown action")
             end
@@ -8569,6 +8890,10 @@ local function loginRunAuthRequest(L, onSuccess, user, pass)
         return
     end
     savePersistedConfig()
+    pcall(function()
+        if broadcastPresence then broadcastPresence() end
+        if refreshNametags then refreshNametags() end
+    end)
     local submitStroke = L.submitBtn:FindFirstChildOfClass("UIStroke")
     if submitStroke then
         tween(submitStroke, quickTween, { Color = Theme.Success })
@@ -8855,6 +9180,10 @@ end
                         persistedConfig.authToken = data.token
                     end
                     savePersistedConfig()
+                    pcall(function()
+                        if broadcastPresence then broadcastPresence() end
+                        if refreshNametags then refreshNametags() end
+                    end)
                 end
                 okSaved = data and data.ok == true and not err
             end)

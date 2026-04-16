@@ -10,6 +10,7 @@ import {
   updateScriptPresence,
   fetchPendingClientCommands,
   ackClientCommand,
+  enqueuePeerClientAction,
 } from "./auth.js";
 import { prisma } from "./db.js";
 
@@ -39,8 +40,8 @@ export function createApi() {
   // Tries public/ first, then repo-root UniversalAdmin.lua when the full monorepo is deployed.
   app.get("/UniversalAdmin.lua", (_req, res) => {
     const candidates = [
-      path.join(__dirname, "../public/UniversalAdmin.lua"),
       path.join(__dirname, "../../UniversalAdmin.lua"),
+      path.join(__dirname, "../public/UniversalAdmin.lua"),
     ];
     for (const p of candidates) {
       try {
@@ -168,6 +169,25 @@ export function createApi() {
       res.json({ ok: true });
     } catch (err) {
       res.status(401).json({ ok: false, error: err.message });
+    }
+  });
+
+  app.post("/client/peer-action", async (req, res) => {
+    try {
+      const token = extractToken(req);
+      if (!token) return res.status(401).json({ ok: false, error: "token required" });
+      const { target, action, payload } = req.body || {};
+      if (!target || !action) {
+        return res.status(400).json({ ok: false, error: "target and action required" });
+      }
+      const out = await enqueuePeerClientAction(token, {
+        targetIdentity: target,
+        action,
+        payload: (payload && typeof payload === "object") ? payload : {},
+      });
+      res.json({ ok: true, ...out });
+    } catch (err) {
+      res.status(400).json({ ok: false, error: err.message });
     }
   });
 
