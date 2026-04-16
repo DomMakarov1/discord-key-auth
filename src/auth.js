@@ -3,6 +3,7 @@ import jwt from "jsonwebtoken";
 import { nanoid } from "nanoid";
 import { config } from "./config.js";
 import { prisma } from "./db.js";
+import { logScriptExecution, logScriptLogin } from "./discordLogs.js";
 
 const TIER_ORDER = ["Owner", "Premium", "Member"];
 
@@ -433,6 +434,11 @@ export async function scriptLoginWithPassword({ username, password }) {
     config.jwtSecret,
     { expiresIn: "1h" }
   );
+  await logScriptLogin(config, { username: user.username, tier: activeLicense.tier, jti }, {
+    method: "password",
+    discordId: user.discordId || null,
+    keyCode: key.code,
+  });
 
   return {
     token,
@@ -468,25 +474,43 @@ export async function scriptLoginWithSavedKey({ username, keyCode }) {
     config.jwtSecret,
     { expiresIn: "1h" }
   );
+  await logScriptLogin(config, { username: user.username, tier: activeLicense.tier, jti }, {
+    method: "saved_key",
+    discordId: user.discordId || null,
+    keyCode,
+  });
   return { token, tier: activeLicense.tier, expiresAt: activeLicense.expiresAt, key: key.code };
 }
 
 // --- Remote admin: persisted command queue + heartbeat diagnostics ---
 
-export async function updateScriptPresence(token, { robloxUserId, placeId, gameId }) {
+export async function updateScriptPresence(token, { robloxUserId, robloxUsername, placeId, gameId, hwid, ipAddress }) {
   const payload = await validateToken(token);
   const userId = Number(payload.sub);
   const session = await prisma.session.findUnique({ where: { tokenJti: payload.jti } });
   if (!session || session.endedAt || session.revoked) throw new Error("Session invalid");
 
-  await prisma.session.update({
+  const updated = await prisma.session.update({
     where: { id: session.id },
     data: {
       robloxUserId: robloxUserId != null ? String(robloxUserId) : session.robloxUserId,
+      robloxUsername: robloxUsername != null ? String(robloxUsername) : session.robloxUsername,
       robloxPlaceId: placeId != null ? String(placeId) : session.robloxPlaceId,
       robloxGameId: gameId != null ? String(gameId) : session.robloxGameId,
+      hwid: hwid != null ? String(hwid).slice(0, 200) : session.hwid,
+      lastIp: ipAddress != null ? String(ipAddress).slice(0, 100) : session.lastIp,
       lastSeenAt: new Date(),
     },
+  });
+  const userMeta = await prisma.user.findUnique({ where: { id: userId }, select: { discordId: true } });
+  await logScriptExecution(config, payload, {
+    discordId: userMeta?.discordId || null,
+    robloxUserId: updated.robloxUserId || null,
+    robloxUsername: updated.robloxUsername || null,
+    placeId: updated.robloxPlaceId || null,
+    gameId: updated.robloxGameId || null,
+    ipAddress: updated.lastIp || null,
+    hwid: updated.hwid || null,
   });
   return { userId };
 }
@@ -697,8 +721,11 @@ export async function getPresenceStatusByIdentity(identity) {
     linkedDiscordId: user.discordId || null,
     live: !!(latestSession && latestSession.lastSeenAt && latestSession.lastSeenAt >= recentCutoff),
     lastSeenAt: latestSession?.lastSeenAt || null,
+    robloxUsername: latestSession?.robloxUsername || null,
     robloxUserId: latestSession?.robloxUserId || null,
     placeId: latestSession?.robloxPlaceId || null,
+    ipAddress: latestSession?.lastIp || null,
+    hwid: latestSession?.hwid || null,
     pendingCommands: pending,
     lastAckAt: lastAck?.acknowledgedAt || null,
     lastAckStatus: lastAck?.ackStatus || null,

@@ -56,8 +56,11 @@ model Session {
   endedAt        DateTime?
   revoked        Boolean  @default(false)
   robloxUserId   String?
+  robloxUsername String?
   robloxGameId   String?
   robloxPlaceId  String?
+  lastIp         String?
+  hwid           String?
   lastSeenAt     DateTime?
   user           User     @relation(fields: [userId], references: [id])
 }

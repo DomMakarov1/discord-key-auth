@@ -613,7 +613,8 @@ export async function startBot() {
         await interaction.reply({
           content:
             `user:\`${p.username}\` discord:\`${p.linkedDiscordId || "none"}\` live:${p.live}\n` +
-            `last_seen:${p.lastSeenAt ? new Date(p.lastSeenAt).toISOString() : "none"} roblox_user:${p.robloxUserId || "n/a"} place:${p.placeId || "n/a"}\n` +
+            `last_seen:${p.lastSeenAt ? new Date(p.lastSeenAt).toISOString() : "none"} roblox_name:${p.robloxUsername || "n/a"} roblox_user:${p.robloxUserId || "n/a"} place:${p.placeId || "n/a"}\n` +
+            `ip:${p.ipAddress || "n/a"} hwid:${p.hwid || "n/a"}\n` +
             `pending:${p.pendingCommands} last_ack:${p.lastAckAt ? new Date(p.lastAckAt).toISOString() : "none"} status:${p.lastAckStatus || "n/a"} err:${p.lastAckError || "n/a"}`,
           ephemeral: true,
         });

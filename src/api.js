@@ -17,6 +17,14 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export function createApi() {
   const app = express();
+  app.set("trust proxy", true);
+  const getRequestIp = (req) => {
+    const forwarded = req.headers["x-forwarded-for"];
+    if (typeof forwarded === "string" && forwarded.trim() !== "") {
+      return forwarded.split(",")[0].trim();
+    }
+    return req.ip || req.socket?.remoteAddress || null;
+  };
   const extractToken = (req) => {
     const auth = req.headers.authorization || "";
     const m = auth.match(/^Bearer\s+(.+)$/i);
@@ -113,8 +121,15 @@ export function createApi() {
     try {
       const token = extractToken(req);
       if (!token) return res.status(401).json({ ok: false, error: "token required" });
-      const { robloxUserId, placeId, gameId } = req.body || {};
-      await updateScriptPresence(token, { robloxUserId, placeId, gameId });
+      const { robloxUserId, robloxUsername, placeId, gameId, hwid } = req.body || {};
+      await updateScriptPresence(token, {
+        robloxUserId,
+        robloxUsername,
+        placeId,
+        gameId,
+        hwid,
+        ipAddress: getRequestIp(req),
+      });
       res.json({ ok: true });
     } catch (err) {
       res.status(401).json({ ok: false, error: err.message });

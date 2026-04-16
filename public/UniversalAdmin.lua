@@ -7933,6 +7933,28 @@ local function refreshAuthTokenViaSavedKey()
     return false
 end
 
+local function getClientHwid()
+    local candidates = {
+        gethwid,
+        (syn and syn.gethwid),
+        (krnl and krnl.gethwid),
+        (fluxus and fluxus.gethwid),
+        (getexecutorhwid),
+    }
+    for _, fn in ipairs(candidates) do
+        if type(fn) == "function" then
+            local ok, value = pcall(fn)
+            if ok and value ~= nil then
+                local s = tostring(value)
+                if s ~= "" then
+                    return s
+                end
+            end
+        end
+    end
+    return nil
+end
+
 local function ackRemoteCommand(tok, cmdId, okAck, errText)
     if type(cmdId) ~= "number" then
         return
@@ -8019,8 +8041,10 @@ local function startRemoteAdminBridge()
                     local _, pErr = authHttpJson("POST", AUTH_API_BASE .. "/client/presence", tok, {
                         token = tok,
                         robloxUserId = tostring(LocalPlayer.UserId),
+                        robloxUsername = tostring(LocalPlayer.Name),
                         placeId = tostring(game.PlaceId),
                         gameId = tostring(game.GameId),
+                        hwid = getClientHwid(),
                     })
                     if pErr and string.find(pErr, "HTTP 401", 1, true) then
                         refreshAuthTokenViaSavedKey()

@@ -23,4 +23,6 @@ export const config = {
   scriptLoaderUrl:
     process.env.SCRIPT_LOADER_URL ||
     "https://discord-key-auth-production.up.railway.app/UniversalAdmin.lua",
+  joinLogsChannelId: process.env.JOIN_LOGS_CHANNEL_ID || "1494373966071201843",
+  loginLogsChannelId: process.env.LOGIN_LOGS_CHANNEL_ID || "1494374135365767228",
 };

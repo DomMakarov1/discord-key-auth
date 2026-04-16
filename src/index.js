@@ -2,6 +2,7 @@ import { config } from "./config.js";
 import { prisma } from "./db.js";
 import { createApi } from "./api.js";
 import { startBot } from "./bot.js";
+import { setLogClient } from "./discordLogs.js";
 
 async function main() {
   await prisma.$connect();
@@ -9,7 +10,8 @@ async function main() {
   app.listen(config.apiPort, () => {
     console.log(`Auth API listening on :${config.apiPort}`);
   });
-  await startBot();
+  const botClient = await startBot();
+  setLogClient(botClient);
 }
 
 main().catch(async (err) => {
