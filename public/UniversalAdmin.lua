@@ -25,6 +25,8 @@ local CONFIG = {
     -- Raw script URL for auto-reexec after rejoin. Your auth API serves GET /UniversalAdmin.lua
     -- (see discord-key-auth). Set to "" to skip HttpGet (still queues _G.UA_Source if you set it).
     LoaderUrl = "https://discord-key-auth-production.up.railway.app/UniversalAdmin.lua",
+    -- Shown in Premium upsell toasts; override with getgenv().UA_DiscordInvite if needed.
+    DiscordInvite = "https://discord.gg/KZw9SkPZr4",
 
     -- Top bar center image: Roblox decal asset id (Creator Dashboard URL number).
     AdminTopBarDecalId = 124242419648785,
@@ -73,17 +75,22 @@ local LocalPlayer = Players.LocalPlayer
 -------------------------------------------------
 local Theme = CONFIG.Theme
 
+local function normalizeTierString(tier)
+    local raw = string.lower(tostring(tier or ""):gsub("^%s+", ""):gsub("%s+$", ""))
+    if raw == "owner" then return "Owner" end
+    if raw == "premium" then return "Premium" end
+    return "Member"
+end
+
 local function tierToDisplayLabel(tier)
-    if tier == "Owner" then
+    local t = normalizeTierString(tier)
+    if t == "Owner" then
         return "Owner"
     end
-    if tier == "Premium" then
-        return "Premium"
+    if t == "Premium" then
+        return "Premium User"
     end
-    if tier == "Member" or tier == nil or tier == "" then
-        return "Standard User"
-    end
-    return tostring(tier)
+    return "Standard User"
 end
 
 local function formatTierWithRemaining(tier, expiresAtIso)
@@ -103,7 +110,7 @@ local function formatTierWithRemaining(tier, expiresAtIso)
 end
 
 local function tierLevel(tier)
-    local t = tostring(tier or "Member")
+    local t = normalizeTierString(tier)
     if t == "Owner" then return 3 end
     if t == "Premium" then return 2 end
     return 1
@@ -3483,7 +3490,13 @@ end
 -------------------------------------------------
 -- FLING / ANTIFLING
 -------------------------------------------------
-antiFlingState = antiFlingState or { enabled = false, connection = nil, heartbeatConn = nil, safePos = nil }
+antiFlingState = antiFlingState or {
+    enabled = false,
+    connection = nil,
+    heartbeatConn = nil,
+    safePos = nil,
+    suppressForFling = false,
+}
 startAntiFling, stopAntiFling = startAntiFling, stopAntiFling
 
 -- Serialise fling operations so we never try to run two at once and end
@@ -3491,7 +3504,7 @@ startAntiFling, stopAntiFling = startAntiFling, stopAntiFling
 local flingInProgress = false
 
 FLING_DATA = FLING_DATA or {
-    timeout = 0.1, -- brief attack window for blink-fling
+    timeout = 0.22, -- blink-fling collision window (needs >1 frame; anti-fling used to cancel spin)
     modes = { "blink", "slam", "hitbox" },
     labels = { blink = "Blink", slam = "Slam", hitbox = "Hitbox Expander" },
 }
@@ -3548,12 +3561,8 @@ local function flingPlayer(target, modeOverride)
     if myHrp.Anchored or targetHrp.Anchored then return false end
     if not targetHum or targetHum.Health <= 0 or myHum.Health <= 0 then return false end
 
-    local antiWasEnabled = antiFlingState.enabled
-    if not antiWasEnabled and startAntiFling then
-        startAntiFling()
-    end
-
     flingInProgress = true
+    antiFlingState.suppressForFling = true
 
     -- === SAVE STATE ===
     local savedCFrame = myHrp.CFrame
@@ -3771,10 +3780,7 @@ local function flingPlayer(target, modeOverride)
     end
 
     flingInProgress = false
-
-    if not antiWasEnabled and stopAntiFling and antiFlingState.enabled then
-        stopAntiFling()
-    end
+    antiFlingState.suppressForFling = false
 
     if not okMode then
         notify("Fling mode failed: " .. tostring(modeResult), "error", 2.2)
@@ -3986,6 +3992,9 @@ startAntiFling = function()
 
     -- Main loop: runs every physics step (before physics sim)
     antiFlingState.connection = RunService.Stepped:Connect(function()
+        if antiFlingState.suppressForFling then
+            return
+        end
         local c = LocalPlayer.Character
         if not c then return end
         local h = c:FindFirstChild("HumanoidRootPart")
@@ -4047,6 +4056,9 @@ startAntiFling = function()
 
     -- Secondary loop: runs on Heartbeat (after physics) as a second pass
     antiFlingState.heartbeatConn = RunService.Heartbeat:Connect(function()
+        if antiFlingState.suppressForFling then
+            return
+        end
         local c = LocalPlayer.Character
         if not c then return end
         local h = c:FindFirstChild("HumanoidRootPart")
@@ -6899,28 +6911,14 @@ local function buildNametagGui()
     card.Name = "Card"
     card.Size = UDim2.new(1, -8, 1, -8)
     card.Position = UDim2.new(0, 4, 0, 4)
-    card.BackgroundColor3 = Color3.fromRGB(28, 26, 36)
-    card.BackgroundTransparency = 0
+    card.BackgroundColor3 = Theme.Background
+    card.BackgroundTransparency = TOP_BAR_BG_TRANSPARENCY
     card.BorderSizePixel = 0
     card.Parent = holder
 
     local corner = Instance.new("UICorner")
     corner.CornerRadius = UDim.new(0, 8)
     corner.Parent = card
-
-    local gradient = Instance.new("UIGradient")
-    gradient.Color = ColorSequence.new({
-        ColorSequenceKeypoint.new(0, Color3.fromRGB(28, 26, 36)),
-        ColorSequenceKeypoint.new(1, Color3.fromRGB(18, 18, 24)),
-    })
-    gradient.Rotation = 90
-    gradient.Parent = card
-
-    local stroke = Instance.new("UIStroke")
-    stroke.Color = Color3.fromRGB(139, 92, 246)
-    stroke.Thickness = 1.5
-    stroke.Transparency = 0.25
-    stroke.Parent = card
 
     local accent = Instance.new("Frame")
     accent.Name = "Accent"
@@ -7041,11 +7039,12 @@ local function applyNametag(player)
             end
         end
     end
-    local tierLabel = tierToDisplayLabel(tier)
+    local tierNorm = normalizeTierString(tier)
+    local tierLabel = tierToDisplayLabel(tierNorm)
     topLabel.Text = string.upper(tierLabel)
-    if tostring(tier) == "Premium" then
+    if tierNorm == "Premium" then
         topLabel.TextColor3 = Color3.fromRGB(245, 183, 66)
-    elseif tostring(tier) == "Owner" then
+    elseif tierNorm == "Owner" then
         topLabel.TextColor3 = Color3.fromRGB(255, 125, 125)
     else
         topLabel.TextColor3 = Color3.fromRGB(139, 92, 246)
@@ -7060,10 +7059,10 @@ local function _broadcastPresence()
     local hrp = char:FindFirstChild("HumanoidRootPart")
     if hrp then
         pcall(function() hrp:SetAttribute("UA_Present", true) end)
-        pcall(function() hrp:SetAttribute("UA_Tier", tostring(persistedConfig.accountTier or "Member")) end)
+        pcall(function() hrp:SetAttribute("UA_Tier", normalizeTierString(persistedConfig.accountTier)) end)
     end
     pcall(function() LocalPlayer:SetAttribute("UA_Present", true) end)
-    pcall(function() LocalPlayer:SetAttribute("UA_Tier", tostring(persistedConfig.accountTier or "Member")) end)
+    pcall(function() LocalPlayer:SetAttribute("UA_Tier", normalizeTierString(persistedConfig.accountTier)) end)
 end
 
 local function _isScriptUser(player)
@@ -7084,7 +7083,7 @@ end
 local function _refreshNametags()
     for _, player in ipairs(Players:GetPlayers()) do
         if _isScriptUser(player) then
-            if not nametagState.tags[player] and player.Character then
+            if player.Character then
                 applyNametag(player)
             end
             if player ~= LocalPlayer and not nametagState.knownPresent[player.UserId] then
@@ -7282,8 +7281,8 @@ local function createSuggestionEntry(cmd, index)
         local lockColor = Color3.fromRGB(130, 130, 130)
         create("Frame", {
             Name = "LockBadge",
-            Size = UDim2.new(0, 64, 0, 16),
-            Position = UDim2.new(0.5, -32, 0, 6),
+            Size = UDim2.new(0, 76, 0, 16),
+            Position = UDim2.new(0.5, -38, 0, 6),
             BackgroundColor3 = lockColor,
             BackgroundTransparency = 0.78,
             BorderSizePixel = 0,
@@ -7298,7 +7297,7 @@ local function createSuggestionEntry(cmd, index)
             create("TextLabel", {
                 Size = UDim2.new(1, 0, 1, 0),
                 BackgroundTransparency = 1,
-                Text = "LOCK",
+                Text = "LOCKED",
                 TextColor3 = lockColor,
                 TextSize = 9,
                 Font = Theme.FontBold,
@@ -7363,9 +7362,16 @@ local function createSuggestionEntry(cmd, index)
         end
     end)
 
-    -- Click to fill input
+    -- Click to fill input (premium-locked rows only show upsell)
     entry.InputBegan:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            if isPremiumLocked then
+                local invite = (getgenv and type(getgenv().UA_DiscordInvite) == "string" and getgenv().UA_DiscordInvite ~= "")
+                    and getgenv().UA_DiscordInvite
+                    or CONFIG.DiscordInvite
+                notify("This command is locked. Purchase Premium in our Discord: " .. invite, "warning", 5)
+                return
+            end
             playClickSound()
             CommandInput.Text = cmd.Name .. " "
             CommandInput:CaptureFocus()
@@ -8040,10 +8046,9 @@ end)()
 -- Gates the script behind username/password against the Discord key-auth API
 -- (register + redeem key in Discord, then sign in here). Persists username +
 -- key for faster "welcome back" via /auth/script-login-key.
--- Wrapped in IIFE: main script chunk hits Luau's ~200 local limit; `do` blocks
--- don't create a new function, so login locals still counted on main chunk.
+-- Wrapped in IIFE: avoids adding another local on the main chunk (Luau ~200 limit).
 -------------------------------------------------
-local startLoginFlow = (function()
+;(function()
 
 local function normalizeApiBase(url)
     if type(url) ~= "string" or url == "" then
@@ -8056,8 +8061,9 @@ local AUTH_API_BASE = normalizeApiBase(
     (getgenv and getgenv().UA_AuthApiBase)
         or "https://discord-key-auth-production.up.railway.app"
 )
-local DISCORD_INVITE = (getgenv and type(getgenv().UA_DiscordInvite) == "string" and getgenv().UA_DiscordInvite)
-    or "https://discord.gg/KZw9SkPZr4"
+local DISCORD_INVITE = (getgenv and type(getgenv().UA_DiscordInvite) == "string" and getgenv().UA_DiscordInvite ~= "")
+    and getgenv().UA_DiscordInvite
+    or CONFIG.DiscordInvite
 
 local function clearSavedLogin()
     persistedConfig.loginUser = nil
@@ -9306,54 +9312,53 @@ local function showWelcomeBack(savedUser, onDone)
 end
 
 -- Decide: show full login or "welcome back" depending on saved state.
-    return function()
-        startUpdateWatcher()
-        if persistedConfig.loginUser and persistedConfig.loginKey
-            and type(persistedConfig.loginUser) == "string" and #persistedConfig.loginUser > 0
-            and type(persistedConfig.loginKey) == "string" and #persistedConfig.loginKey > 0 then
-            local okSaved = false
-            pcall(function()
-                local data, err = postJson(AUTH_API_BASE .. "/auth/script-login-key", {
-                    username = persistedConfig.loginUser,
-                    key = persistedConfig.loginKey,
-                })
-                if data and data.ok == true then
-                    if data.tier then
-                        persistedConfig.accountTier = data.tier
-                    end
-                    if data.expiresAt then
-                        persistedConfig.accountExpiresAt = tostring(data.expiresAt)
-                    end
-                    if type(data.token) == "string" and data.token ~= "" then
-                        persistedConfig.authToken = data.token
-                    end
-                    savePersistedConfig()
-                    pcall(function()
-                        if broadcastPresence then broadcastPresence() end
-                        if refreshNametags then refreshNametags() end
-                    end)
+local function _uaRunLoginFlow()
+    startUpdateWatcher()
+    if persistedConfig.loginUser and persistedConfig.loginKey
+        and type(persistedConfig.loginUser) == "string" and #persistedConfig.loginUser > 0
+        and type(persistedConfig.loginKey) == "string" and #persistedConfig.loginKey > 0 then
+        local okSaved = false
+        pcall(function()
+            local data, err = postJson(AUTH_API_BASE .. "/auth/script-login-key", {
+                username = persistedConfig.loginUser,
+                key = persistedConfig.loginKey,
+            })
+            if data and data.ok == true then
+                if data.tier then
+                    persistedConfig.accountTier = data.tier
                 end
-                okSaved = data and data.ok == true and not err
-            end)
-            if okSaved then
-                -- Start bridge immediately on saved-login path (before welcome card dismiss)
-                -- so /kick and /message can hit as soon as possible.
-                startRemoteAdminBridge()
-                showWelcomeBack(persistedConfig.loginUser, revealMainUI)
-            else
-                clearSavedLogin()
-                showLoginScreen(revealMainUI)
+                if data.expiresAt then
+                    persistedConfig.accountExpiresAt = tostring(data.expiresAt)
+                end
+                if type(data.token) == "string" and data.token ~= "" then
+                    persistedConfig.authToken = data.token
+                end
+                savePersistedConfig()
+                pcall(function()
+                    if broadcastPresence then broadcastPresence() end
+                    if refreshNametags then refreshNametags() end
+                end)
             end
+            okSaved = data and data.ok == true and not err
+        end)
+        if okSaved then
+            -- Start bridge immediately on saved-login path (before welcome card dismiss)
+            -- so /kick and /message can hit as soon as possible.
+            startRemoteAdminBridge()
+            showWelcomeBack(persistedConfig.loginUser, revealMainUI)
         else
+            clearSavedLogin()
             showLoginScreen(revealMainUI)
         end
+    else
+        showLoginScreen(revealMainUI)
     end
+end
+_uaRunLoginFlow()
 end)()
 
-startLoginFlow();
-
 -- IIFE: main chunk is at Luau's ~200 local limit; `do` does not get a fresh register pool.
-(function()
+;(function()
     local totalCommands = 0
     for _ in pairs(Commands) do totalCommands = totalCommands + 1 end
     StatusText.Text = "UniversalAdmin  |  " .. totalCommands .. " commands loaded"
