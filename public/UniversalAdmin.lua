@@ -8340,21 +8340,14 @@ end
 local function loginDiscordClicked(L)
     L.errLabel.TextColor3 = Theme.TextDim
     if DISCORD_INVITE ~= "" then
-        local opened = false
-        pcall(function()
-            local gs = game:GetService("GuiService")
-            if gs.OpenBrowserWindow then
-                gs:OpenBrowserWindow(DISCORD_INVITE)
-                opened = true
-            end
-        end)
-        if not opened and type(setclipboard) == "function" then
-            setclipboard(DISCORD_INVITE)
-            L.errLabel.Text = "Discord invite copied to clipboard"
-        elseif not opened then
-            L.errLabel.Text = DISCORD_INVITE
+        local clip = (setclipboard or (syn and syn.write_clipboard) or (toclipboard) or (writeclipboard))
+        if type(clip) == "function" then
+            pcall(function()
+                clip(DISCORD_INVITE)
+            end)
+            L.errLabel.Text = "Copied discord link to clipboard"
         else
-            L.errLabel.Text = "Opening Discord…"
+            L.errLabel.Text = DISCORD_INVITE
         end
     else
         L.errLabel.Text = "Set getgenv().UA_DiscordInvite = \"https://discord.gg/...\" before running"
