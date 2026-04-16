@@ -70,6 +70,9 @@ local LocalPlayer = Players.LocalPlayer
 local Theme = CONFIG.Theme
 
 local function tierToDisplayLabel(tier)
+    if tier == "Owner" then
+        return "Owner"
+    end
     if tier == "Premium" then
         return "Premium"
     end
@@ -6384,25 +6387,13 @@ end
 
     local function openCatalogAsset(id)
         local url = "https://www.roblox.com/catalog/" .. tostring(id)
-        local opened = false
-        pcall(function()
-            local gs = game:GetService("GuiService")
-            if gs.OpenBrowserWindow then
-                gs:OpenBrowserWindow(url)
-                opened = true
-            end
-        end)
-        if not opened then
-            local clip = (setclipboard or (syn and syn.write_clipboard) or (toclipboard) or (writeclipboard))
-            if type(clip) == "function" then
-                pcall(function() clip(url) end)
-                notify("Marketplace link copied to clipboard", "info", 3)
-                return
-            end
-            notify(url, "info", 4)
+        local clip = (setclipboard or (syn and syn.write_clipboard) or (toclipboard) or (writeclipboard))
+        if type(clip) == "function" then
+            pcall(function() clip(url) end)
+            notify("Marketplace link copied to clipboard", "info", 3)
             return
         end
-        notify("Opening marketplace item...", "info", 2)
+        notify(url, "info", 4)
     end
 
     local function buildItemsFromDescription(desc)
@@ -6431,6 +6422,14 @@ end
         pushId(safeField("Pants"), "Pants")
         pushId(safeField("GraphicTShirt"), "T-Shirt")
         pushId(safeField("Face"), "Face")
+        -- Include avatar package/body-part asset ids (Headless/Korblox/etc).
+        -- These fields are present depending on avatar type and package usage.
+        pushId(safeField("Head"), "Body Part: Head")
+        pushId(safeField("Torso"), "Body Part: Torso")
+        pushId(safeField("LeftArm"), "Body Part: Left Arm")
+        pushId(safeField("RightArm"), "Body Part: Right Arm")
+        pushId(safeField("LeftLeg"), "Body Part: Left Leg")
+        pushId(safeField("RightLeg"), "Body Part: Right Leg")
         pushCsv("HatAccessory", "Hat")
         pushCsv("HairAccessory", "Hair")
         pushCsv("FaceAccessory", "Face Accessory")

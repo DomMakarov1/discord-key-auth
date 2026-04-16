@@ -45,9 +45,20 @@ const commands = [
     .addStringOption((o) => o.setName("code").setDescription("Key code").setRequired(true)),
   new SlashCommandBuilder()
     .setName("issue")
-    .setDescription("Admin: issue a Member key")
+    .setDescription("Admin: issue a key")
     .addIntegerOption((o) =>
       o.setName("days").setDescription("Duration in days").setRequired(true).setMinValue(1)
+    )
+    .addStringOption((o) =>
+      o
+        .setName("tier")
+        .setDescription("Key tier")
+        .setRequired(true)
+        .addChoices(
+          { name: "Member", value: "Member" },
+          { name: "Premium", value: "Premium" },
+          { name: "Owner", value: "Owner" }
+        )
     ),
   new SlashCommandBuilder()
     .setName("status")
@@ -139,9 +150,20 @@ const commands = [
     .addStringOption((o) => o.setName("user").setDescription("Username").setRequired(true)),
   new SlashCommandBuilder()
     .setName("issuebulk")
-    .setDescription("Admin: issue multiple Member keys")
+    .setDescription("Admin: issue multiple keys")
     .addIntegerOption((o) => o.setName("days").setDescription("Duration in days").setRequired(true).setMinValue(1))
-    .addIntegerOption((o) => o.setName("count").setDescription("How many keys").setRequired(true).setMinValue(1).setMaxValue(200)),
+    .addIntegerOption((o) => o.setName("count").setDescription("How many keys").setRequired(true).setMinValue(1).setMaxValue(200))
+    .addStringOption((o) =>
+      o
+        .setName("tier")
+        .setDescription("Key tier")
+        .setRequired(true)
+        .addChoices(
+          { name: "Member", value: "Member" },
+          { name: "Premium", value: "Premium" },
+          { name: "Owner", value: "Owner" }
+        )
+    ),
   new SlashCommandBuilder()
     .setName("settier")
     .setDescription("Admin: set user rank")
@@ -151,7 +173,11 @@ const commands = [
         .setName("rank")
         .setDescription("Rank")
         .setRequired(true)
-        .addChoices({ name: "Member", value: "Member" })
+        .addChoices(
+          { name: "Member", value: "Member" },
+          { name: "Premium", value: "Premium" },
+          { name: "Owner", value: "Owner" }
+        )
     ),
   new SlashCommandBuilder()
     .setName("changepass")
@@ -338,8 +364,9 @@ export async function startBot() {
       if (interaction.commandName === "issue") {
         requireAdmin(interaction);
         const days = interaction.options.getInteger("days", true);
-        const key = await issueKey({ tier: "Member", durationDays: days });
-        await interaction.reply({ content: `Issued key: \`${key.code}\``, ephemeral: true });
+        const tier = interaction.options.getString("tier", true);
+        const key = await issueKey({ tier, durationDays: days });
+        await interaction.reply({ content: `Issued ${tier} key: \`${key.code}\``, ephemeral: true });
         return;
       }
 
@@ -480,9 +507,10 @@ export async function startBot() {
         requireAdmin(interaction);
         const days = interaction.options.getInteger("days", true);
         const count = interaction.options.getInteger("count", true);
-        const keys = await issueBulk(days, count);
+        const tier = interaction.options.getString("tier", true);
+        const keys = await issueBulk(days, count, tier);
         await interaction.reply({
-          content: `Issued ${keys.length} keys:\n${keys.slice(0, 20).map((k) => `\`${k.code}\``).join("\n")}`,
+          content: `Issued ${keys.length} ${tier} keys:\n${keys.slice(0, 20).map((k) => `\`${k.code}\``).join("\n")}`,
           ephemeral: true,
         });
         return;

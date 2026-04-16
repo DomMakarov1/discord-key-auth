@@ -4,6 +4,37 @@ import { nanoid } from "nanoid";
 import { config } from "./config.js";
 import { prisma } from "./db.js";
 
+const TIER_ORDER = ["Owner", "Premium", "Member"];
+
+function normalizeTier(input, { allowNull = false } = {}) {
+  if (input == null) {
+    if (allowNull) return null;
+    return "Member";
+  }
+  const raw = String(input).trim().toLowerCase();
+  if (raw === "" && allowNull) return null;
+  if (raw === "owner") return "Owner";
+  if (raw === "premium") return "Premium";
+  if (raw === "member") return "Member";
+  throw new Error("Invalid tier. Use Member, Premium, or Owner");
+}
+
+async function getBestActiveLicense(userId) {
+  const now = new Date();
+  const licenses = await prisma.license.findMany({
+    where: {
+      userId,
+      active: true,
+      expiresAt: { gt: now },
+      tier: { in: TIER_ORDER },
+    },
+    orderBy: { expiresAt: "desc" },
+  });
+  if (!licenses.length) return null;
+  licenses.sort((a, b) => TIER_ORDER.indexOf(a.tier) - TIER_ORDER.indexOf(b.tier));
+  return licenses[0];
+}
+
 function parseBlacklistDuration(input) {
   const raw = String(input || "").trim().toLowerCase();
   if (!raw) throw new Error("Blacklist duration required (infinite, 5h, 10d)");
@@ -50,16 +81,8 @@ export async function loginUser({ username, password }) {
   const ok = await bcrypt.compare(password, user.passwordHash);
   if (!ok) throw new Error("Invalid credentials");
 
-  const activeLicense = await prisma.license.findFirst({
-    where: {
-      userId: user.id,
-      active: true,
-      expiresAt: { gt: new Date() },
-      tier: "Member",
-    },
-    orderBy: { expiresAt: "desc" },
-  });
-  if (!activeLicense) throw new Error("No active Member license");
+  const activeLicense = await getBestActiveLicense(user.id);
+  if (!activeLicense) throw new Error("No active license");
 
   const jti = nanoid(24);
   const session = await prisma.session.create({
@@ -101,9 +124,10 @@ export async function validateToken(token) {
 }
 
 export async function issueKey({ tier = "Member", durationDays = 30 }) {
-  const code = `${tier.toUpperCase()}-${nanoid(20)}`;
+  const normTier = normalizeTier(tier);
+  const code = `${normTier.toUpperCase()}-${nanoid(20)}`;
   return prisma.key.create({
-    data: { code, tier, durationDays },
+    data: { code, tier: normTier, durationDays },
   });
 }
 
@@ -117,6 +141,9 @@ export async function redeemKey({ username, discordId, code }) {
   const key = await prisma.key.findUnique({ where: { code } });
   if (!key) throw new Error("Invalid key");
   if (key.redeemedAt) throw new Error("Key already redeemed");
+  if (key.tier === "Owner" && !config.adminDiscordIds.includes(String(user.discordId || ""))) {
+    throw new Error("Owner keys can only be redeemed by owner accounts");
+  }
 
   const now = new Date();
   const expiresAt = new Date(now.getTime() + key.durationDays * 24 * 60 * 60 * 1000);
@@ -263,6 +290,9 @@ export async function assignKey(username, code) {
   const key = await prisma.key.findUnique({ where: { code } });
   if (!key) throw new Error("Key not found");
   if (key.redeemedAt) throw new Error("Key already redeemed");
+  if (key.tier === "Owner" && !config.adminDiscordIds.includes(String(user.discordId || ""))) {
+    throw new Error("Owner keys can only be assigned to owner Discord accounts");
+  }
   return prisma.key.update({
     where: { id: key.id },
     data: { assignedToId: user.id },
@@ -322,12 +352,13 @@ export async function logoutAllSessions(identity) {
   });
 }
 
-export async function issueBulk(days, count) {
+export async function issueBulk(days, count, tierInput = "Member") {
+  const tier = normalizeTier(tierInput);
   const toCreate = [];
   for (let i = 0; i < count; i += 1) {
     toCreate.push({
-      code: `MEMBER-${nanoid(20)}`,
-      tier: "Member",
+      code: `${tier.toUpperCase()}-${nanoid(20)}`,
+      tier,
       durationDays: days,
     });
   }
@@ -337,9 +368,13 @@ export async function issueBulk(days, count) {
 
 export async function setTier(username, rank) {
   const user = await getUserByIdentity(username);
+  const normRank = normalizeTier(rank);
+  if (normRank === "Owner" && !config.adminDiscordIds.includes(String(user.discordId || ""))) {
+    throw new Error("Owner rank can only be set for configured owner Discord accounts");
+  }
   return prisma.user.update({
     where: { id: user.id },
-    data: { rank },
+    data: { rank: normRank },
   });
 }
 
@@ -371,15 +406,7 @@ export async function scriptLoginWithPassword({ username, password }) {
   if (!ok) throw new Error("Invalid username or password");
 
   const now = new Date();
-  const activeLicense = await prisma.license.findFirst({
-    where: {
-      userId: user.id,
-      active: true,
-      expiresAt: { gt: now },
-      tier: "Member",
-    },
-    orderBy: { expiresAt: "desc" },
-  });
+  const activeLicense = await getBestActiveLicense(user.id);
   if (!activeLicense) throw new Error("No active key/license");
 
   const key = await prisma.key.findFirst({
@@ -428,15 +455,7 @@ export async function scriptLoginWithSavedKey({ username, keyCode }) {
   if (!affiliated) throw new Error("Key not affiliated");
 
   const now = new Date();
-  const activeLicense = await prisma.license.findFirst({
-    where: {
-      userId: user.id,
-      active: true,
-      tier: "Member",
-      expiresAt: { gt: now },
-    },
-    orderBy: { expiresAt: "desc" },
-  });
+  const activeLicense = await getBestActiveLicense(user.id);
   if (!activeLicense) throw new Error("No active key/license");
 
   const jti = nanoid(24);
