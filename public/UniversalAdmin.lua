@@ -8753,6 +8753,7 @@ end
 
 -- Decide: show full login or "welcome back" depending on saved state.
     return function()
+        startUpdateWatcher()
         if persistedConfig.loginUser and persistedConfig.loginKey
             and type(persistedConfig.loginUser) == "string" and #persistedConfig.loginUser > 0
             and type(persistedConfig.loginKey) == "string" and #persistedConfig.loginKey > 0 then
@@ -8789,7 +8790,6 @@ end
 end)()
 
 startLoginFlow();
-startUpdateWatcher();
 
 -- IIFE: main chunk is at Luau's ~200 local limit; `do` does not get a fresh register pool.
 (function()
