@@ -6311,21 +6311,31 @@ end
         Parent = right,
     })
 
-    local invHint = create("TextLabel", {
-        Size = UDim2.new(1, -12, 0, 52),
-        Position = UDim2.new(0, 6, 0, 224),
+    local invStats = create("TextLabel", {
+        Size = UDim2.new(1, -12, 0, 18),
+        Position = UDim2.new(0, 6, 0, 228),
         BackgroundTransparency = 1,
-        Text = "Click an item to open marketplace.\nIf browser is unavailable, link is copied.",
+        Text = "",
         TextColor3 = Theme.TextMuted,
         TextSize = 11,
         Font = Theme.Font,
-        TextWrapped = true,
         TextXAlignment = Enum.TextXAlignment.Left,
-        TextYAlignment = Enum.TextYAlignment.Top,
         Parent = right,
     })
 
-    local invNameCache = {}
+    local invValue = create("TextLabel", {
+        Size = UDim2.new(1, -12, 0, 22),
+        Position = UDim2.new(0, 6, 1, -24),
+        BackgroundTransparency = 1,
+        Text = "Outfit value: n/a",
+        TextColor3 = Theme.AccentPrimary,
+        TextSize = 13,
+        Font = Theme.FontBold,
+        TextXAlignment = Enum.TextXAlignment.Right,
+        Parent = right,
+    })
+
+    local invInfoCache = {}
 
     local function clearInventoryRows()
         for _, c in ipairs(invList:GetChildren()) do
@@ -6349,19 +6359,27 @@ end
         return out
     end
 
-    local function itemNameFromId(id)
-        if invNameCache[id] then
-            return invNameCache[id]
+    local function itemInfoFromId(id)
+        if invInfoCache[id] then
+            return invInfoCache[id]
         end
-        local name = "Asset " .. tostring(id)
+        local infoOut = {
+            name = "Asset " .. tostring(id),
+            price = nil,
+        }
         local ok, info = pcall(function()
             return game:GetService("MarketplaceService"):GetProductInfo(id)
         end)
-        if ok and type(info) == "table" and type(info.Name) == "string" and info.Name ~= "" then
-            name = info.Name
+        if ok and type(info) == "table" then
+            if type(info.Name) == "string" and info.Name ~= "" then
+                infoOut.name = info.Name
+            end
+            if type(info.PriceInRobux) == "number" then
+                infoOut.price = info.PriceInRobux
+            end
         end
-        invNameCache[id] = name
-        return name
+        invInfoCache[id] = infoOut
+        return infoOut
     end
 
     local function openCatalogAsset(id)
@@ -6442,8 +6460,10 @@ end
 
     local function showInventoryForPlayer(player)
         clearInventoryRows()
-        invAvatar.Image = "rbxthumb://type=AvatarHeadShot&id=" .. tostring(player.UserId) .. "&w=420&h=420"
+        invAvatar.Image = "rbxthumb://type=Avatar&id=" .. tostring(player.UserId) .. "&w=420&h=420"
         invName.Text = player.DisplayName .. "  (@" .. player.Name .. ")"
+        invStats.Text = ""
+        invValue.Text = "Outfit value: n/a"
 
         local desc = getDescriptionForPlayer(player)
         if not desc then
@@ -6462,6 +6482,7 @@ end
 
         local items = buildItemsFromDescription(desc)
         if #items == 0 then
+            invStats.Text = "Items: 0"
             create("TextLabel", {
                 Size = UDim2.new(1, -8, 0, 40),
                 BackgroundTransparency = 1,
@@ -6474,16 +6495,19 @@ end
             return
         end
 
+        local totalValue = 0
+        local pricedCount = 0
+
         for i, item in ipairs(items) do
             local btn = create("TextButton", {
                 Name = "InvItem_" .. tostring(item.id),
-                Size = UDim2.new(1, -4, 0, 30),
+                Size = UDim2.new(1, -4, 0, 42),
                 LayoutOrder = i,
                 BackgroundColor3 = Theme.Surface,
                 BackgroundTransparency = 0.2,
                 BorderSizePixel = 0,
                 AutoButtonColor = false,
-                Text = "[" .. item.kind .. "] " .. itemNameFromId(item.id) .. "  (#" .. tostring(item.id) .. ")",
+                Text = "",
                 TextColor3 = Theme.Text,
                 TextSize = 11,
                 Font = Theme.Font,
@@ -6491,10 +6515,37 @@ end
                 Parent = invList,
             }, {
                 create("UICorner", { CornerRadius = UDim.new(0, 6) }),
-                create("UIPadding", {
-                    PaddingLeft = UDim.new(0, 8),
-                    PaddingRight = UDim.new(0, 6),
-                }),
+            })
+            local thumb = create("ImageLabel", {
+                Size = UDim2.new(0, 32, 0, 32),
+                Position = UDim2.new(0, 5, 0.5, -16),
+                BackgroundColor3 = Theme.Background,
+                BackgroundTransparency = 0.1,
+                BorderSizePixel = 0,
+                Image = "rbxthumb://type=Asset&id=" .. tostring(item.id) .. "&w=150&h=150",
+                Parent = btn,
+            }, {
+                create("UICorner", { CornerRadius = UDim.new(0, 5) }),
+            })
+            local info = itemInfoFromId(item.id)
+            if type(info.price) == "number" then
+                totalValue = totalValue + info.price
+                pricedCount = pricedCount + 1
+            end
+            create("TextLabel", {
+                Size = UDim2.new(1, -48, 1, 0),
+                Position = UDim2.new(0, 44, 0, 0),
+                BackgroundTransparency = 1,
+                Text = "[" .. item.kind .. "] " .. info.name
+                    .. "  (#" .. tostring(item.id) .. ")"
+                    .. (info.price and ("  -  R$" .. tostring(info.price)) or ""),
+                TextColor3 = Theme.Text,
+                TextSize = 11,
+                Font = Theme.Font,
+                TextXAlignment = Enum.TextXAlignment.Left,
+                TextYAlignment = Enum.TextYAlignment.Center,
+                TextWrapped = true,
+                Parent = btn,
             })
             btn.MouseEnter:Connect(function()
                 tween(btn, quickTween, { BackgroundTransparency = 0 })
@@ -6506,6 +6557,13 @@ end
                 playClickSound()
                 openCatalogAsset(item.id)
             end)
+        end
+
+        invStats.Text = "Items: " .. tostring(#items) .. "  |  Priced: " .. tostring(pricedCount)
+        if pricedCount > 0 then
+            invValue.Text = "Outfit value: R$" .. tostring(totalValue)
+        else
+            invValue.Text = "Outfit value: n/a"
         end
     end
 
@@ -7394,6 +7452,7 @@ CommandInput.FocusLost:Connect(function(enterPressed)
 
     CommandInput.Text = ""
     populateSuggestions("")
+    closeUI()
 end)
 
 -------------------------------------------------
