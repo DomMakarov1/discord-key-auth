@@ -290,6 +290,8 @@ local openHelp, closeHelp
 local requestPeerActionFn
 local nametagState, broadcastPresence, refreshNametags
 local populateSuggestions
+local showDataPanel
+local reportAlertEvent
 
 -------------------------------------------------
 -- COMMAND REGISTRY
@@ -965,18 +967,16 @@ local _adminIconUrl = _adminDecalId > 0
 -- Opaque fill ≈ Theme.Background over a dark backdrop with the same transparency as
 -- the bar (single layer of grey). Semi-transparent fill on top of the bar doubled alpha;
 -- fully transparent fill left the overflow ring showing the game behind.
-local _topBarFillOpaque = (function()
-    local bg = Theme.Background
-    local v = 1 - TOP_BAR_BG_TRANSPARENCY
-    return Color3.new(bg.R * v, bg.G * v, bg.B * v)
-end)()
-
 local AdminIconHolder = create("Frame", {
     Name = "AdminIcon",
     AnchorPoint = Vector2.new(0.5, 0.5),
     Position = UDim2.new(0.5, 0, 0.5, 0),
     Size = UDim2.new(0, 46, 0, 46),
-    BackgroundColor3 = _topBarFillOpaque,
+    BackgroundColor3 = (function()
+        local bg = Theme.Background
+        local v = 1 - TOP_BAR_BG_TRANSPARENCY
+        return Color3.new(bg.R * v, bg.G * v, bg.B * v)
+    end)(),
     BackgroundTransparency = 0,
     BorderSizePixel = 0,
     ZIndex = 8,
@@ -4323,7 +4323,7 @@ end
 local spectateState = { target = nil, showCard = true, cardGui = nil, cardConn = nil }
 local freecamState = { enabled = false, connection = nil, cf = nil }
 
-local function parseBoolArg(raw, defaultValue)
+spectateState.parseBoolArg = function(raw, defaultValue)
     if raw == nil then return defaultValue end
     local v = tostring(raw):lower()
     if v == "true" or v == "on" or v == "1" or v == "yes" then return true end
@@ -4331,7 +4331,7 @@ local function parseBoolArg(raw, defaultValue)
     return defaultValue
 end
 
-local function destroySpectateCard()
+spectateState.destroyCard = function()
     if spectateState.cardConn then
         spectateState.cardConn:Disconnect()
         spectateState.cardConn = nil
@@ -4342,8 +4342,8 @@ local function destroySpectateCard()
     spectateState.cardGui = nil
 end
 
-local function buildSpectateCard(target)
-    destroySpectateCard()
+spectateState.buildCard = function(target)
+    spectateState.destroyCard()
     local gui = Instance.new("ScreenGui")
     gui.Name = "UniversalAdmin_SpectateCard"
     gui.ResetOnSpawn = false
@@ -4391,7 +4391,7 @@ local function buildSpectateCard(target)
     spectateState.cardGui = gui
     spectateState.cardConn = RunService.Heartbeat:Connect(function()
         if not spectateState.target or spectateState.target ~= target then
-            destroySpectateCard()
+            spectateState.destroyCard()
             return
         end
         local tChar = target.Character
@@ -4425,7 +4425,7 @@ local function stopSpectate()
         end
         spectateState.target = nil
     end
-    destroySpectateCard()
+    spectateState.destroyCard()
 end
 
 Commands["spectate"].Execute = function(args)
@@ -4446,14 +4446,14 @@ Commands["spectate"].Execute = function(args)
     if cam then
         cam.CameraSubject = hum
         spectateState.target = target
-        local showCard = parseBoolArg(args[2], persistedConfig.spectateCard ~= false)
+        local showCard = spectateState.parseBoolArg(args[2], persistedConfig.spectateCard ~= false)
         spectateState.showCard = showCard
         persistedConfig.spectateCard = showCard
         savePersistedConfig()
         if showCard then
-            buildSpectateCard(target)
+            spectateState.buildCard(target)
         else
-            destroySpectateCard()
+            spectateState.destroyCard()
         end
         notify("Spectating " .. target.DisplayName .. (showCard and " (card on)" or " (card off)"), "success", 2)
     end
@@ -4960,7 +4960,11 @@ end
 Commands["recent"].Execute = function()
     local recents = persistedConfig.recentCommands or {}
     if #recents == 0 then
-        notify("No recent commands yet", "info", 2)
+        if showDataPanel then
+            showDataPanel("Recent Commands", { "No recent commands yet." })
+        else
+            notify("No recent commands yet", "info", 2)
+        end
         return
     end
     local maxShow = math.min(8, #recents)
@@ -4968,18 +4972,169 @@ Commands["recent"].Execute = function()
     for i = 1, maxShow do
         lines[#lines + 1] = tostring(i) .. ". " .. tostring(recents[i])
     end
-    notify("Recent commands:\n" .. table.concat(lines, "\n"), "info", 6)
+    if showDataPanel then
+        showDataPanel("Recent Commands (" .. tostring(maxShow) .. ")", lines)
+    else
+        notify("Recent commands:\n" .. table.concat(lines, "\n"), "info", 6)
+    end
 end
 
 ;(function()
-persistedConfig.waypoints = type(persistedConfig.waypoints) == "table" and persistedConfig.waypoints or {}
-persistedConfig.profiles = type(persistedConfig.profiles) == "table" and persistedConfig.profiles or {}
-persistedConfig.alerts = type(persistedConfig.alerts) == "table" and persistedConfig.alerts or {}
-if persistedConfig.alerts.join == nil then persistedConfig.alerts.join = true end
-if persistedConfig.alerts.leave == nil then persistedConfig.alerts.leave = true end
-if persistedConfig.alerts.uaUsers == nil then persistedConfig.alerts.uaUsers = true end
-if persistedConfig.alerts.spectateRespawn == nil then persistedConfig.alerts.spectateRespawn = true end
-if persistedConfig.spectateCard == nil then persistedConfig.spectateCard = true end
+local _persistMigrated = false
+if type(persistedConfig.waypoints) ~= "table" then
+    persistedConfig.waypoints = {}
+    _persistMigrated = true
+end
+if type(persistedConfig.profiles) ~= "table" then
+    persistedConfig.profiles = {}
+    _persistMigrated = true
+end
+if type(persistedConfig.alerts) ~= "table" then
+    persistedConfig.alerts = {}
+    _persistMigrated = true
+end
+if persistedConfig.alerts.join == nil then persistedConfig.alerts.join = true; _persistMigrated = true end
+if persistedConfig.alerts.leave == nil then persistedConfig.alerts.leave = true; _persistMigrated = true end
+if persistedConfig.alerts.uaUsers == nil then persistedConfig.alerts.uaUsers = true; _persistMigrated = true end
+if persistedConfig.alerts.spectateRespawn == nil then persistedConfig.alerts.spectateRespawn = true; _persistMigrated = true end
+if persistedConfig.spectateCard == nil then persistedConfig.spectateCard = true; _persistMigrated = true end
+if _persistMigrated then
+    savePersistedConfig()
+end
+
+local function mkList(parent, yOffset, height)
+    return create("ScrollingFrame", {
+        Size = UDim2.new(1, 0, 0, height),
+        Position = UDim2.new(0, 0, 0, yOffset),
+        BackgroundColor3 = Theme.Surface,
+        BackgroundTransparency = 0.25,
+        BorderSizePixel = 0,
+        ScrollBarThickness = 3,
+        ScrollBarImageColor3 = Theme.AccentPrimary,
+        CanvasSize = UDim2.new(0, 0, 0, 0),
+        AutomaticCanvasSize = Enum.AutomaticSize.Y,
+        Parent = parent,
+    }, {
+        create("UICorner", { CornerRadius = UDim.new(0, 6) }),
+        create("UIStroke", { Color = Theme.Border, Thickness = 1, Transparency = 0.4 }),
+        create("UIListLayout", { Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder }),
+        create("UIPadding", { PaddingTop = UDim.new(0, 6), PaddingBottom = UDim.new(0, 6), PaddingLeft = UDim.new(0, 6), PaddingRight = UDim.new(0, 6) }),
+    })
+end
+
+local function mkMiniBtn(parent, pos, text, accentColor)
+    local color = accentColor or Theme.AccentPrimary
+    local b = create("TextButton", {
+        Size = UDim2.new(0, 56, 0, 20),
+        Position = pos,
+        BackgroundColor3 = color,
+        BackgroundTransparency = 0.7,
+        BorderSizePixel = 0,
+        AutoButtonColor = false,
+        Text = text,
+        TextColor3 = color,
+        TextSize = 10,
+        Font = Theme.FontBold,
+        Parent = parent,
+    }, {
+        create("UICorner", { CornerRadius = UDim.new(0, 4) }),
+        create("UIStroke", { Color = color, Thickness = 1, Transparency = 0.25 }),
+    })
+    b.MouseEnter:Connect(function() tween(b, quickTween, { BackgroundTransparency = 0.55 }) end)
+    b.MouseLeave:Connect(function() tween(b, quickTween, { BackgroundTransparency = 0.7 }) end)
+    return b
+end
+
+local function confirmDialog(titleText, bodyText, onYes)
+    local g = create("ScreenGui", {
+        Name = "UA_ConfirmDialog",
+        ResetOnSpawn = false,
+        IgnoreGuiInset = true,
+        DisplayOrder = 2000000200,
+        ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+        Parent = CoreGui,
+    })
+    local shade = create("Frame", {
+        Size = UDim2.new(1, 0, 1, 0),
+        BackgroundColor3 = Color3.new(0, 0, 0),
+        BackgroundTransparency = 0.35,
+        BorderSizePixel = 0,
+        Parent = g,
+    })
+    local box = create("Frame", {
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.new(0.5, 0, 0.5, 0),
+        Size = UDim2.new(0, 360, 0, 170),
+        BackgroundColor3 = Theme.Background,
+        BorderSizePixel = 0,
+        Parent = shade,
+    }, {
+        create("UICorner", { CornerRadius = Theme.CornerRadiusLg }),
+        create("UIStroke", { Color = Theme.Border, Thickness = 1, Transparency = 0.3 }),
+    })
+    create("TextLabel", {
+        Size = UDim2.new(1, -20, 0, 24),
+        Position = UDim2.new(0, 10, 0, 10),
+        BackgroundTransparency = 1,
+        Text = titleText or "Confirm",
+        TextColor3 = Theme.Text,
+        TextSize = 14,
+        Font = Theme.FontBold,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Parent = box,
+    })
+    create("TextLabel", {
+        Size = UDim2.new(1, -20, 0, 80),
+        Position = UDim2.new(0, 10, 0, 38),
+        BackgroundTransparency = 1,
+        Text = bodyText or "",
+        TextColor3 = Theme.TextDim,
+        TextSize = 12,
+        Font = Theme.Font,
+        TextWrapped = true,
+        TextYAlignment = Enum.TextYAlignment.Top,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Parent = box,
+    })
+    local yes = mkMiniBtn(box, UDim2.new(1, -130, 1, -30), "YES", Theme.Success)
+    local no = mkMiniBtn(box, UDim2.new(1, -68, 1, -30), "NO", Theme.Error)
+    yes.MouseButton1Click:Connect(function()
+        if onYes then pcall(onYes) end
+        g:Destroy()
+    end)
+    no.MouseButton1Click:Connect(function()
+        g:Destroy()
+    end)
+end
+
+local alertsPanel = createToolPanel({
+    Name = "AlertsPanel",
+    Title = "Alerts",
+    Width = 430,
+    Height = 380,
+    Position = UDim2.new(0.5, -215, 0.5, -190),
+})
+local profilesPanel = createToolPanel({
+    Name = "ProfilesPanel",
+    Title = "Profiles",
+    Width = 430,
+    Height = 380,
+    Position = UDim2.new(0.5, -200, 0.5, -175),
+})
+local waypointsPanel = createToolPanel({
+    Name = "WaypointsPanel",
+    Title = "Waypoints",
+    Width = 430,
+    Height = 380,
+    Position = UDim2.new(0.5, -185, 0.5, -160),
+})
+local recentPanel = createToolPanel({
+    Name = "RecentPanel",
+    Title = "Recent Commands",
+    Width = 430,
+    Height = 380,
+    Position = UDim2.new(0.5, -170, 0.5, -145),
+})
 
 local function getWaypointBucket()
     local placeKey = tostring(game.PlaceId)
@@ -4991,61 +5146,192 @@ local function getWaypointBucket()
     return bucket
 end
 
+local wpNameInput = createTextInput(waypointsPanel.Content, UDim2.new(0, 0, 0, 4), "new waypoint name", "")
+local wpCreateBtn = create("TextButton", {
+    Size = UDim2.new(0, 126, 0, 26),
+    Position = UDim2.new(0, 0, 0, 40),
+    BackgroundColor3 = Theme.AccentPrimary,
+    BackgroundTransparency = 0.55,
+    BorderSizePixel = 0,
+    AutoButtonColor = false,
+    Text = "Create Here",
+    TextColor3 = Theme.Text,
+    TextSize = 11,
+    Font = Theme.FontBold,
+    Parent = waypointsPanel.Content,
+}, { create("UICorner", { CornerRadius = UDim.new(0, 6) }) })
+local wpRefreshBtn = create("TextButton", {
+    Size = UDim2.new(0, 92, 0, 26),
+    Position = UDim2.new(0, 134, 0, 40),
+    BackgroundColor3 = Theme.SurfaceHover,
+    BackgroundTransparency = 0.35,
+    BorderSizePixel = 0,
+    AutoButtonColor = false,
+    Text = "Refresh",
+    TextColor3 = Theme.Text,
+    TextSize = 11,
+    Font = Theme.FontBold,
+    Parent = waypointsPanel.Content,
+}, { create("UICorner", { CornerRadius = UDim.new(0, 6) }) })
+local wpList = mkList(waypointsPanel.Content, 72, 254)
+
+local function saveWaypoint(name, overwrite)
+    local bucket = getWaypointBucket()
+    local key = tostring(name or ""):lower()
+    if key == "" then return false, "Waypoint name required" end
+    if bucket[key] and not overwrite then
+        return false, "exists"
+    end
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return false, "No HumanoidRootPart" end
+    bucket[key] = { label = tostring(name), x = hrp.Position.X, y = hrp.Position.Y, z = hrp.Position.Z }
+    savePersistedConfig()
+    return true
+end
+
+local function gotoWaypoint(name)
+    local wp = getWaypointBucket()[tostring(name):lower()]
+    if not wp then return false, "Waypoint not found" end
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return false, "No HumanoidRootPart" end
+    local rot = hrp.CFrame - hrp.Position
+    hrp.CFrame = CFrame.new(wp.x, wp.y, wp.z) * rot
+    return true
+end
+
+local function refreshWaypointsList()
+    for _, c in ipairs(wpList:GetChildren()) do
+        if c:IsA("Frame") then c:Destroy() end
+    end
+    local items = {}
+    for k, wp in pairs(getWaypointBucket()) do
+        items[#items + 1] = { key = k, label = tostring(wp.label or k), wp = wp }
+    end
+    table.sort(items, function(a, b) return a.label:lower() < b.label:lower() end)
+    if #items == 0 then
+        create("TextLabel", {
+            Size = UDim2.new(1, 0, 0, 28),
+            BackgroundTransparency = 1,
+            Text = "No waypoints saved for this game.",
+            TextColor3 = Theme.TextMuted,
+            TextSize = 12,
+            Font = Theme.Font,
+            Parent = wpList,
+        })
+        return
+    end
+    for i, item in ipairs(items) do
+        local row = create("Frame", {
+            Size = UDim2.new(1, 0, 0, 44),
+            BackgroundColor3 = Theme.Surface,
+            BackgroundTransparency = 0.25,
+            BorderSizePixel = 0,
+            LayoutOrder = i,
+            Parent = wpList,
+        }, { create("UICorner", { CornerRadius = UDim.new(0, 6) }) })
+        create("TextLabel", {
+            Size = UDim2.new(1, -190, 0, 18),
+            Position = UDim2.new(0, 8, 0, 4),
+            BackgroundTransparency = 1,
+            Text = item.label,
+            TextColor3 = Theme.Text,
+            TextSize = 12,
+            Font = Theme.FontBold,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            Parent = row,
+        })
+        create("TextLabel", {
+            Size = UDim2.new(1, -190, 0, 16),
+            Position = UDim2.new(0, 8, 0, 22),
+            BackgroundTransparency = 1,
+            Text = string.format("x=%.1f y=%.1f z=%.1f", item.wp.x, item.wp.y, item.wp.z),
+            TextColor3 = Theme.TextDim,
+            TextSize = 10,
+            Font = Theme.FontMono,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            Parent = row,
+        })
+        mkMiniBtn(row, UDim2.new(1, -176, 0, 12), "Goto", Theme.Success).MouseButton1Click:Connect(function()
+            gotoWaypoint(item.key)
+        end)
+        mkMiniBtn(row, UDim2.new(1, -116, 0, 12), "Save", Theme.Warning).MouseButton1Click:Connect(function()
+            confirmDialog("Overwrite Waypoint", "Overwrite '" .. item.label .. "' with your current position?", function()
+                saveWaypoint(item.label, true)
+                refreshWaypointsList()
+            end)
+        end)
+        mkMiniBtn(row, UDim2.new(1, -56, 0, 12), "Delete", Theme.Error).MouseButton1Click:Connect(function()
+            confirmDialog("Delete Waypoint", "Delete '" .. item.label .. "'?", function()
+                getWaypointBucket()[item.key] = nil
+                savePersistedConfig()
+                refreshWaypointsList()
+            end)
+        end)
+    end
+end
+
+wpCreateBtn.MouseButton1Click:Connect(function()
+    local name = wpNameInput.GetText()
+    if name == "" then
+        notify("Waypoint name required", "error", 2)
+        return
+    end
+    local ok, err = saveWaypoint(name, false)
+    if ok then
+        wpNameInput.SetText("")
+        refreshWaypointsList()
+    elseif err == "exists" then
+        confirmDialog("Overwrite Waypoint", "'" .. name .. "' already exists. Overwrite it?", function()
+            saveWaypoint(name, true)
+            wpNameInput.SetText("")
+            refreshWaypointsList()
+        end)
+    else
+        notify(tostring(err), "error", 2)
+    end
+end)
+wpRefreshBtn.MouseButton1Click:Connect(refreshWaypointsList)
+
 Commands["waypoint"].Execute = function(args)
     local action = args and args[1] and tostring(args[1]):lower() or "list"
-    local name = args and args[2] and tostring(args[2]) or ""
-    local bucket = getWaypointBucket()
+    local name = args and table.concat(args, " ", 2) or ""
     if action == "add" or action == "set" then
         if name == "" then error("Usage: ;waypoint add <name>") end
-        local char = LocalPlayer.Character
-        local hrp = char and char:FindFirstChild("HumanoidRootPart")
-        if not hrp then error("No HumanoidRootPart") end
-        bucket[name:lower()] = {
-            label = name,
-            x = hrp.Position.X,
-            y = hrp.Position.Y,
-            z = hrp.Position.Z,
-        }
-        savePersistedConfig()
-        notify("Waypoint saved: " .. name, "success", 2)
-        return
+        local ok, err = saveWaypoint(name, false)
+        if not ok and err == "exists" then
+            confirmDialog("Overwrite Waypoint", "'" .. name .. "' already exists. Overwrite it?", function()
+                saveWaypoint(name, true)
+                refreshWaypointsList()
+            end)
+        elseif not ok then
+            error(tostring(err))
+        end
     elseif action == "goto" or action == "tp" then
         if name == "" then error("Usage: ;waypoint goto <name>") end
-        local wp = bucket[name:lower()]
-        if not wp then error("Waypoint not found: " .. name) end
-        local char = LocalPlayer.Character
-        local hrp = char and char:FindFirstChild("HumanoidRootPart")
-        if not hrp then error("No HumanoidRootPart") end
-        local rot = hrp.CFrame - hrp.Position
-        hrp.CFrame = CFrame.new(wp.x, wp.y, wp.z) * rot
-        notify("Teleported to waypoint: " .. (wp.label or name), "success", 2)
-        return
+        local ok, err = gotoWaypoint(name)
+        if not ok then error(tostring(err)) end
     elseif action == "del" or action == "delete" or action == "remove" then
-        if name == "" then error("Usage: ;waypoint del <name>") end
-        if not bucket[name:lower()] then error("Waypoint not found: " .. name) end
-        bucket[name:lower()] = nil
+        if name == "" then error("Usage: ;waypoint delete <name>") end
+        local bucket = getWaypointBucket()
+        local key = name:lower()
+        if not bucket[key] then error("Waypoint not found: " .. name) end
+        bucket[key] = nil
         savePersistedConfig()
-        notify("Waypoint deleted: " .. name, "info", 2)
-        return
     elseif action == "clear" then
-        persistedConfig.waypoints[tostring(game.PlaceId)] = {}
-        savePersistedConfig()
-        notify("Cleared waypoints for this game", "info", 2)
-        return
+        confirmDialog("Clear Waypoints", "Delete all waypoints for this game?", function()
+            persistedConfig.waypoints[tostring(game.PlaceId)] = {}
+            savePersistedConfig()
+            refreshWaypointsList()
+        end)
     elseif action ~= "list" then
-        error("Usage: ;waypoint <add|goto|del|list|clear> [name]")
+        error("Usage: ;waypoint <add|goto|delete|list|clear> [name]")
     end
-
-    local names = {}
-    for _, wp in pairs(bucket) do
-        names[#names + 1] = tostring(wp.label or "?")
-    end
-    table.sort(names, function(a, b) return string.lower(a) < string.lower(b) end)
-    if #names == 0 then
-        notify("No waypoints saved for this game", "info", 2)
-    else
-        notify("Waypoints (" .. tostring(#names) .. "):\n" .. table.concat(names, ", "), "info", 6)
-    end
+    refreshWaypointsList()
+    task.defer(function()
+        if not waypointsPanel.IsOpen() then waypointsPanel.Show() end
+    end)
 end
 
 Commands["serverinfo"].Execute = function()
@@ -5140,40 +5426,153 @@ local function applyProfile(profile)
     return true
 end
 
+local profileNameInput = createTextInput(profilesPanel.Content, UDim2.new(0, 0, 0, 4), "new profile name", "")
+local profileCreateBtn = create("TextButton", {
+    Size = UDim2.new(0, 126, 0, 26),
+    Position = UDim2.new(0, 0, 0, 40),
+    BackgroundColor3 = Theme.AccentPrimary,
+    BackgroundTransparency = 0.55,
+    BorderSizePixel = 0,
+    AutoButtonColor = false,
+    Text = "Create",
+    TextColor3 = Theme.Text,
+    TextSize = 11,
+    Font = Theme.FontBold,
+    Parent = profilesPanel.Content,
+}, { create("UICorner", { CornerRadius = UDim.new(0, 6) }) })
+local profileRefreshBtn = create("TextButton", {
+    Size = UDim2.new(0, 92, 0, 26),
+    Position = UDim2.new(0, 134, 0, 40),
+    BackgroundColor3 = Theme.SurfaceHover,
+    BackgroundTransparency = 0.35,
+    BorderSizePixel = 0,
+    AutoButtonColor = false,
+    Text = "Refresh",
+    TextColor3 = Theme.Text,
+    TextSize = 11,
+    Font = Theme.FontBold,
+    Parent = profilesPanel.Content,
+}, { create("UICorner", { CornerRadius = UDim.new(0, 6) }) })
+local profileList = mkList(profilesPanel.Content, 72, 254)
+
+local function saveProfileNamed(name)
+    persistedConfig.profiles[name] = captureProfile()
+    savePersistedConfig()
+end
+
+local function refreshProfilesList()
+    for _, c in ipairs(profileList:GetChildren()) do
+        if c:IsA("Frame") or c:IsA("TextLabel") then c:Destroy() end
+    end
+    local names = {}
+    for n in pairs(persistedConfig.profiles) do names[#names + 1] = n end
+    table.sort(names, function(a, b) return a:lower() < b:lower() end)
+    if #names == 0 then
+        create("TextLabel", {
+            Size = UDim2.new(1, 0, 0, 28),
+            BackgroundTransparency = 1,
+            Text = "No saved profiles.",
+            TextColor3 = Theme.TextMuted,
+            TextSize = 12,
+            Font = Theme.Font,
+            Parent = profileList,
+        })
+        return
+    end
+    for i, name in ipairs(names) do
+        local row = create("Frame", {
+            Size = UDim2.new(1, 0, 0, 38),
+            BackgroundColor3 = Theme.Surface,
+            BackgroundTransparency = 0.25,
+            BorderSizePixel = 0,
+            LayoutOrder = i,
+            Parent = profileList,
+        }, { create("UICorner", { CornerRadius = UDim.new(0, 6) }) })
+        create("TextLabel", {
+            Size = UDim2.new(1, -190, 1, 0),
+            Position = UDim2.new(0, 8, 0, 0),
+            BackgroundTransparency = 1,
+            Text = name,
+            TextColor3 = Theme.Text,
+            TextSize = 12,
+            Font = Theme.FontBold,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            Parent = row,
+        })
+        mkMiniBtn(row, UDim2.new(1, -176, 0, 9), "Load", Theme.Success).MouseButton1Click:Connect(function()
+            local okApply, err = applyProfile(persistedConfig.profiles[name])
+            if not okApply then
+                notify(tostring(err or "Invalid profile"), "error", 2)
+            end
+        end)
+        mkMiniBtn(row, UDim2.new(1, -116, 0, 9), "Save", Theme.Warning).MouseButton1Click:Connect(function()
+            confirmDialog("Overwrite Profile", "Overwrite '" .. name .. "' with current settings?", function()
+                saveProfileNamed(name)
+                refreshProfilesList()
+            end)
+        end)
+        mkMiniBtn(row, UDim2.new(1, -56, 0, 9), "Delete", Theme.Error).MouseButton1Click:Connect(function()
+            confirmDialog("Delete Profile", "Delete profile '" .. name .. "'?", function()
+                persistedConfig.profiles[name] = nil
+                savePersistedConfig()
+                refreshProfilesList()
+            end)
+        end)
+    end
+end
+
+profileCreateBtn.MouseButton1Click:Connect(function()
+    local name = profileNameInput.GetText()
+    if name == "" then
+        notify("Profile name required", "error", 2)
+        return
+    end
+    if persistedConfig.profiles[name] then
+        confirmDialog("Overwrite Profile", "'" .. name .. "' already exists. Overwrite it?", function()
+            saveProfileNamed(name)
+            profileNameInput.SetText("")
+            refreshProfilesList()
+        end)
+        return
+    end
+    saveProfileNamed(name)
+    profileNameInput.SetText("")
+    refreshProfilesList()
+end)
+profileRefreshBtn.MouseButton1Click:Connect(refreshProfilesList)
+
 Commands["profiles"].Execute = function(args)
     local action = args and args[1] and tostring(args[1]):lower() or "list"
     local name = args and table.concat(args, " ", 2) or ""
-    local profiles = persistedConfig.profiles
     if action == "save" then
         if name == "" then error("Usage: ;profiles save <name>") end
-        profiles[name] = captureProfile()
-        savePersistedConfig()
-        notify("Profile saved: " .. name, "success", 2)
-        return
+        if persistedConfig.profiles[name] then
+            confirmDialog("Overwrite Profile", "Overwrite '" .. name .. "' with current settings?", function()
+                saveProfileNamed(name)
+                refreshProfilesList()
+            end)
+        else
+            saveProfileNamed(name)
+        end
     elseif action == "load" then
         if name == "" then error("Usage: ;profiles load <name>") end
-        local okApply, err = applyProfile(profiles[name])
-        if not okApply then error(err or "Profile not found") end
-        notify("Profile loaded: " .. name, "success", 3)
-        return
+        local okApply, err = applyProfile(persistedConfig.profiles[name])
+        if not okApply then error(tostring(err or "Profile not found")) end
     elseif action == "delete" or action == "del" or action == "remove" then
         if name == "" then error("Usage: ;profiles delete <name>") end
-        if not profiles[name] then error("Profile not found: " .. name) end
-        profiles[name] = nil
-        savePersistedConfig()
-        notify("Profile deleted: " .. name, "info", 2)
-        return
+        if not persistedConfig.profiles[name] then error("Profile not found: " .. name) end
+        confirmDialog("Delete Profile", "Delete profile '" .. name .. "'?", function()
+            persistedConfig.profiles[name] = nil
+            savePersistedConfig()
+            refreshProfilesList()
+        end)
     elseif action ~= "list" then
         error("Usage: ;profiles <save|load|delete|list> [name]")
     end
-    local names = {}
-    for k in pairs(profiles) do names[#names + 1] = k end
-    table.sort(names, function(a, b) return string.lower(a) < string.lower(b) end)
-    if #names == 0 then
-        notify("No profiles saved", "info", 2)
-    else
-        notify("Profiles:\n" .. table.concat(names, "\n"), "info", 7)
-    end
+    refreshProfilesList()
+    task.defer(function()
+        if not profilesPanel.IsOpen() then profilesPanel.Show() end
+    end)
 end
 
 local function setAlertField(field, value)
@@ -5189,45 +5588,243 @@ local function setAlertField(field, value)
     persistedConfig.alerts[field] = value
 end
 
-Commands["alerts"].Execute = function(args)
-    if not args or not args[1] then
-        notify(
-            "Alerts:\njoin=" .. tostring(persistedConfig.alerts.join ~= false) ..
-            " leave=" .. tostring(persistedConfig.alerts.leave ~= false) ..
-            " ua=" .. tostring(persistedConfig.alerts.uaUsers ~= false) ..
-            " spectate=" .. tostring(persistedConfig.alerts.spectateRespawn ~= false),
-            "info",
-            6
-        )
+local alertRows = {}
+local alertLogEntries = {}
+local alertHeader = create("TextLabel", {
+    Size = UDim2.new(1, 0, 0, 16),
+    Position = UDim2.new(0, 0, 0, 4),
+    BackgroundTransparency = 1,
+    Text = "Alert Channels",
+    TextColor3 = Theme.TextDim,
+    TextSize = 11,
+    Font = Theme.FontBold,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    Parent = alertsPanel.Content,
+})
+local alertList = mkList(alertsPanel.Content, 24, 108)
+local alertLogTitle = create("TextLabel", {
+    Size = UDim2.new(1, 0, 0, 16),
+    Position = UDim2.new(0, 0, 0, 136),
+    BackgroundTransparency = 1,
+    Text = "Alert Feed",
+    TextColor3 = Theme.TextDim,
+    TextSize = 11,
+    Font = Theme.FontBold,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    Parent = alertsPanel.Content,
+})
+local alertFeed = mkList(alertsPanel.Content, 156, 170)
+
+local function refreshAlertRows()
+    local defs = {
+        { key = "join", label = "Join alerts" },
+        { key = "leave", label = "Leave alerts" },
+        { key = "uaUsers", label = "UA user alerts" },
+        { key = "spectateRespawn", label = "Spectate respawn alerts" },
+    }
+    if #alertRows == 0 then
+        for i, d in ipairs(defs) do
+            local row = create("Frame", {
+                Size = UDim2.new(1, 0, 0, 22),
+                BackgroundTransparency = 1,
+                LayoutOrder = i,
+                Parent = alertList,
+            })
+            local label = create("TextLabel", {
+                Size = UDim2.new(1, -120, 1, 0),
+                BackgroundTransparency = 1,
+                Text = d.label,
+                TextColor3 = Theme.Text,
+                TextSize = 12,
+                Font = Theme.Font,
+                TextXAlignment = Enum.TextXAlignment.Left,
+                Parent = row,
+            })
+            local state = create("TextLabel", {
+                Size = UDim2.new(0, 48, 1, 0),
+                Position = UDim2.new(1, -108, 0, 0),
+                BackgroundTransparency = 1,
+                Text = "",
+                TextColor3 = Theme.TextDim,
+                TextSize = 11,
+                Font = Theme.FontBold,
+                Parent = row,
+            })
+            local btn = mkMiniBtn(row, UDim2.new(1, -56, 0, 1), "Toggle", Theme.AccentPrimary)
+            btn.MouseButton1Click:Connect(function()
+                setAlertField(d.key, not (persistedConfig.alerts[d.key] ~= false))
+                savePersistedConfig()
+                refreshAlertRows()
+            end)
+            alertRows[#alertRows + 1] = { key = d.key, state = state, label = label }
+        end
+    end
+    for _, row in ipairs(alertRows) do
+        local on = persistedConfig.alerts[row.key] ~= false
+        row.state.Text = on and "ON" or "OFF"
+        row.state.TextColor3 = on and Theme.Success or Theme.Error
+    end
+end
+
+local function refreshAlertFeed()
+    for _, c in ipairs(alertFeed:GetChildren()) do
+        if c:IsA("TextLabel") then c:Destroy() end
+    end
+    if #alertLogEntries == 0 then
+        create("TextLabel", {
+            Size = UDim2.new(1, 0, 0, 24),
+            BackgroundTransparency = 1,
+            Text = "No alerts yet.",
+            TextColor3 = Theme.TextMuted,
+            TextSize = 12,
+            Font = Theme.Font,
+            Parent = alertFeed,
+        })
         return
     end
-    local channel = tostring(args[1]):lower()
-    local mode = tostring(args[2] or "toggle"):lower()
-    local map = { join = true, leave = true, ua = true, spectate = true, all = true }
-    if not map[channel] then
-        error("Usage: ;alerts <join|leave|ua|spectate|all> [on|off|toggle]")
+    for i, line in ipairs(alertLogEntries) do
+        create("TextLabel", {
+            Size = UDim2.new(1, 0, 0, 18),
+            BackgroundTransparency = 1,
+            LayoutOrder = i,
+            Text = line,
+            TextColor3 = Theme.Text,
+            TextSize = 11,
+            Font = Theme.Font,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            Parent = alertFeed,
+        })
     end
-    local current
-    if channel == "join" then current = persistedConfig.alerts.join ~= false
-    elseif channel == "leave" then current = persistedConfig.alerts.leave ~= false
-    elseif channel == "ua" then current = persistedConfig.alerts.uaUsers ~= false
-    elseif channel == "spectate" then current = persistedConfig.alerts.spectateRespawn ~= false
-    else current = (persistedConfig.alerts.join ~= false) and (persistedConfig.alerts.leave ~= false) and (persistedConfig.alerts.uaUsers ~= false) and (persistedConfig.alerts.spectateRespawn ~= false)
+end
+
+reportAlertEvent = function(msg)
+    local line = os.date("%H:%M:%S") .. "  " .. tostring(msg)
+    table.insert(alertLogEntries, 1, line)
+    while #alertLogEntries > 60 do table.remove(alertLogEntries) end
+    refreshAlertFeed()
+end
+
+Commands["alerts"].Execute = function(args)
+    if args and args[1] then
+        local channel = tostring(args[1]):lower()
+        local mode = tostring(args[2] or "toggle"):lower()
+        local map = { join = "join", leave = "leave", ua = "uaUsers", spectate = "spectateRespawn", all = "all" }
+        local mapped = map[channel]
+        if mapped then
+            if mapped == "all" then
+                local allOn = (persistedConfig.alerts.join ~= false) and (persistedConfig.alerts.leave ~= false)
+                    and (persistedConfig.alerts.uaUsers ~= false) and (persistedConfig.alerts.spectateRespawn ~= false)
+                local nextVal = (mode == "on") and true or ((mode == "off") and false or (not allOn))
+                setAlertField("all", nextVal)
+            else
+                local cur = persistedConfig.alerts[mapped] ~= false
+                local nextVal = (mode == "on") and true or ((mode == "off") and false or (not cur))
+                setAlertField(mapped, nextVal)
+            end
+            savePersistedConfig()
+        end
     end
-    local newValue = current
-    if mode == "on" then newValue = true
-    elseif mode == "off" then newValue = false
-    else newValue = not current
+    refreshAlertRows()
+    refreshAlertFeed()
+    task.defer(function()
+        if not alertsPanel.IsOpen() then alertsPanel.Show() end
+    end)
+end
+
+local recentList = mkList(recentPanel.Content, 4, 292)
+local recentClearBtn = create("TextButton", {
+    Size = UDim2.new(0, 86, 0, 24),
+    Position = UDim2.new(1, -86, 1, -26),
+    BackgroundColor3 = Theme.Error,
+    BackgroundTransparency = 0.7,
+    BorderSizePixel = 0,
+    AutoButtonColor = false,
+    Text = "Clear",
+    TextColor3 = Theme.Error,
+    TextSize = 11,
+    Font = Theme.FontBold,
+    Parent = recentPanel.Content,
+}, {
+    create("UICorner", { CornerRadius = UDim.new(0, 6) }),
+    create("UIStroke", { Color = Theme.Error, Thickness = 1, Transparency = 0.2 }),
+})
+
+local function refreshRecentList()
+    for _, c in ipairs(recentList:GetChildren()) do
+        if c:IsA("TextLabel") or c:IsA("Frame") then c:Destroy() end
     end
-    setAlertField(channel, newValue)
-    savePersistedConfig()
-    notify("Alerts updated: " .. channel .. " = " .. tostring(newValue), "success", 2)
+    local recents = persistedConfig.recentCommands or {}
+    if #recents == 0 then
+        create("TextLabel", {
+            Size = UDim2.new(1, 0, 0, 24),
+            BackgroundTransparency = 1,
+            Text = "No recent commands yet.",
+            TextColor3 = Theme.TextMuted,
+            TextSize = 12,
+            Font = Theme.Font,
+            Parent = recentList,
+        })
+        return
+    end
+    local maxShow = math.min(30, #recents)
+    for i = 1, maxShow do
+        create("TextLabel", {
+            Size = UDim2.new(1, 0, 0, 18),
+            BackgroundTransparency = 1,
+            LayoutOrder = i,
+            Text = tostring(i) .. ". " .. tostring(recents[i]),
+            TextColor3 = Theme.Text,
+            TextSize = 11,
+            Font = Theme.FontMono,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            Parent = recentList,
+        })
+    end
+end
+
+recentClearBtn.MouseButton1Click:Connect(function()
+    confirmDialog("Clear Recent Commands", "Remove all saved recent commands?", function()
+        persistedConfig.recentCommands = {}
+        savePersistedConfig()
+        refreshRecentList()
+    end)
+end)
+
+showDataPanel = function(titleText)
+    local t = tostring(titleText or "")
+    if t:find("Profile") then
+        refreshProfilesList()
+        if not profilesPanel.IsOpen() then profilesPanel.Show() end
+        return
+    end
+    if t:find("Alert") then
+        refreshAlertRows()
+        refreshAlertFeed()
+        if not alertsPanel.IsOpen() then alertsPanel.Show() end
+        return
+    end
+    if t:find("Recent") then
+        refreshRecentList()
+        if not recentPanel.IsOpen() then recentPanel.Show() end
+        return
+    end
+end
+
+Commands["recent"].Execute = function()
+    refreshRecentList()
+    task.defer(function()
+        if not recentPanel.IsOpen() then recentPanel.Show() end
+    end)
 end
 
 local function watchAlertEvents(player)
     player.CharacterAdded:Connect(function()
         if spectateState.target == player and persistedConfig.alerts.spectateRespawn ~= false then
-            notify(player.DisplayName .. " respawned while spectating", "info", 2.5)
+            if reportAlertEvent then
+                reportAlertEvent(player.DisplayName .. " respawned while spectating")
+            else
+                notify(player.DisplayName .. " respawned while spectating", "info", 2.5)
+            end
         end
     end)
 end
@@ -5239,13 +5836,21 @@ end
 Players.PlayerAdded:Connect(function(player)
     watchAlertEvents(player)
     if persistedConfig.alerts.join ~= false then
-        notify(player.DisplayName .. " joined", "info", 2)
+        if reportAlertEvent then
+            reportAlertEvent(player.DisplayName .. " joined")
+        else
+            notify(player.DisplayName .. " joined", "info", 2)
+        end
     end
 end)
 
 Players.PlayerRemoving:Connect(function(player)
     if persistedConfig.alerts.leave ~= false then
-        notify(player.DisplayName .. " left", "info", 2)
+        if reportAlertEvent then
+            reportAlertEvent(player.DisplayName .. " left")
+        else
+            notify(player.DisplayName .. " left", "info", 2)
+        end
     end
 end)
 end)()
@@ -6606,8 +7211,8 @@ startSmoothFly = function()
     return true
 end
 
--- SmoothFly panel
-local sfPanel = createToolPanel({
+-- SmoothFly panel (store refs in state table to reduce local-register pressure)
+smoothFlyState.panel = createToolPanel({
     Name = "SmoothFlyPanel",
     Title = "Smooth Flight",
     Width = 260,
@@ -6615,7 +7220,7 @@ local sfPanel = createToolPanel({
     Position = UDim2.new(0.5, -130, 0.5, -130),
 })
 
-smoothFlyToggle = createToggleButton(sfPanel.Content, UDim2.new(0, 0, 0, 4))
+smoothFlyToggle = createToggleButton(smoothFlyState.panel.Content, UDim2.new(0, 0, 0, 4))
 smoothFlyToggle.OnToggle(function(enabled)
     if enabled then
         if not startSmoothFly() then
@@ -6629,23 +7234,23 @@ smoothFlyToggle.OnToggle(function(enabled)
     end
 end)
 
-createLabel("SPEED", sfPanel.Content, UDim2.new(0, 0, 0, 46))
-local sfSpeedStepper = createStepper(sfPanel.Content, UDim2.new(0, 0, 0, 62), smoothFlyState.speed, 10, 500, 10)
-sfSpeedStepper.OnChange(function(v)
+createLabel("SPEED", smoothFlyState.panel.Content, UDim2.new(0, 0, 0, 46))
+smoothFlyState.speedStepper = createStepper(smoothFlyState.panel.Content, UDim2.new(0, 0, 0, 62), smoothFlyState.speed, 10, 500, 10)
+smoothFlyState.speedStepper.OnChange(function(v)
     smoothFlyState.speed = v
 end)
 
-createLabel("HOTKEY", sfPanel.Content, UDim2.new(0, 0, 0, 98))
-local sfHotkeyBtn = createHotkeyButton(sfPanel.Content, UDim2.new(0, 0, 0, 114), smoothFlyState.hotkey)
-sfHotkeyBtn.OnChange(function(newKey)
+createLabel("HOTKEY", smoothFlyState.panel.Content, UDim2.new(0, 0, 0, 98))
+smoothFlyState.hotkeyBtn = createHotkeyButton(smoothFlyState.panel.Content, UDim2.new(0, 0, 0, 114), smoothFlyState.hotkey)
+smoothFlyState.hotkeyBtn.OnChange(function(newKey)
     smoothFlyState.hotkey = newKey
     notify("Smooth flight hotkey set to " .. newKey.Name, "info", 2)
 end)
 
-createLabel("ALWAYS ACTIVE HOTKEY", sfPanel.Content, UDim2.new(0, 0, 0, 150))
+createLabel("ALWAYS ACTIVE HOTKEY", smoothFlyState.panel.Content, UDim2.new(0, 0, 0, 150))
 do
-    local t = createToggleButton(sfPanel.Content, UDim2.new(0, 0, 0, 166), hotkeyAlwaysActive["smoothfly"] or false)
-    t.OnToggle(function(enabled)
+    smoothFlyState.hotkeyAlwaysToggle = createToggleButton(smoothFlyState.panel.Content, UDim2.new(0, 0, 0, 166), hotkeyAlwaysActive["smoothfly"] or false)
+    smoothFlyState.hotkeyAlwaysToggle.OnToggle(function(enabled)
         hotkeyAlwaysActive["smoothfly"] = enabled
         persistedConfig.hotkeyAlwaysActive["smoothfly"] = enabled or nil
         savePersistedConfig()
@@ -6662,7 +7267,7 @@ create("TextLabel", {
     TextSize = 10,
     Font = Theme.Font,
     TextXAlignment = Enum.TextXAlignment.Center,
-    Parent = sfPanel.Content,
+    Parent = smoothFlyState.panel.Content,
 })
 
 Commands["smoothfly"].Execute = function(args)
@@ -6670,12 +7275,12 @@ Commands["smoothfly"].Execute = function(args)
         local n = tonumber(args[1])
         if n then
             smoothFlyState.speed = math.clamp(n, 10, 500)
-            sfSpeedStepper.SetValue(smoothFlyState.speed)
+            smoothFlyState.speedStepper.SetValue(smoothFlyState.speed)
         end
     end
     task.defer(function()
-        if not sfPanel.IsOpen() then
-            sfPanel.Show()
+        if not smoothFlyState.panel.IsOpen() then
+            smoothFlyState.panel.Show()
         end
     end)
 end
@@ -7503,13 +8108,19 @@ end
 local function _refreshNametags()
     for _, player in ipairs(Players:GetPlayers()) do
         if _isScriptUser(player) then
+            -- Re-apply so tier text updates after login (first spawn may run before accountTier is set).
             if player.Character then
                 applyNametag(player)
             end
             if player ~= LocalPlayer and not nametagState.knownPresent[player.UserId] then
                 nametagState.knownPresent[player.UserId] = true
                 if not persistedConfig.alerts or persistedConfig.alerts.uaUsers ~= false then
-                    notify(player.DisplayName .. " is using UniversalAdmin in this server", "info", 4)
+                    local msg = player.DisplayName .. " is using UniversalAdmin in this server"
+                    if reportAlertEvent then
+                        reportAlertEvent(msg)
+                    else
+                        notify(msg, "info", 4)
+                    end
                 end
             end
         else
@@ -7586,9 +8197,9 @@ end
 
 -- Console/Network/Settings buttons are wired after toggleUI() is declared below
 
--------------------------------------------------
--- SUGGESTION ENTRY BUILDER
--------------------------------------------------
+;(function()
+local expandedHeight = 380
+
 local function createLocalBadge(parent, rightOffset)
     local badge = create("Frame", {
         Name = "LocalBadge",
@@ -7641,7 +8252,7 @@ local function createSuggestionEntry(cmd, index)
         Parent = entry,
     })
 
-    local descLabel = create("TextLabel", {
+    create("TextLabel", {
         Size = UDim2.new(1, -24, 0, 16),
         Position = UDim2.new(0, 12, 0, 24),
         BackgroundTransparency = 1,
@@ -7658,9 +8269,8 @@ local function createSuggestionEntry(cmd, index)
     local isPremiumLocked = cmd.Premium and not hasTierAtLeast("Premium")
     local baseBgColor = Theme.Surface
 
-    -- ON badge if the command is currently toggled on
     if getToggleState and getToggleState(cmd.Name) then
-        local onBadge = create("Frame", {
+        create("Frame", {
             Name = "OnBadge",
             Size = UDim2.new(0, 28, 0, 16),
             Position = UDim2.new(1, rightEdge - 28, 0, 6),
@@ -7684,7 +8294,6 @@ local function createSuggestionEntry(cmd, index)
                 Font = Theme.FontBold,
             }),
         })
-        -- Tint the entry background slightly to make it more obvious
         entry.BackgroundColor3 = Color3.new(
             Theme.Surface.R + 0.05,
             Theme.Surface.G + 0.08,
@@ -7772,7 +8381,6 @@ local function createSuggestionEntry(cmd, index)
         })
     end
 
-    -- Hover effect
     entry.InputBegan:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseMovement then
             tween(entry, quickTween, { BackgroundColor3 = Theme.SurfaceHover })
@@ -7784,7 +8392,6 @@ local function createSuggestionEntry(cmd, index)
         end
     end)
 
-    -- Click to fill input (premium-locked rows only show upsell)
     entry.InputBegan:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1 then
             if isPremiumLocked then
@@ -7803,13 +8410,6 @@ local function createSuggestionEntry(cmd, index)
     entry.Parent = ResultsFrame
     return entry
 end
-
--------------------------------------------------
--- UI STATE MANAGEMENT
--- NOTE: isOpen, openUI, closeUI, toggleUI are forward-declared at the top
--------------------------------------------------
-;(function()
-local expandedHeight = 380
 
 local function clearResults()
     for _, child in ipairs(ResultsFrame:GetChildren()) do
@@ -7992,6 +8592,69 @@ populateSuggestions = function(query)
                 end
             end
             CommandCount.Text = #players .. " player" .. (#players ~= 1 and "s" or "")
+            return
+        end
+        if cmd then
+            -- Generic argument mode: keep the resolved command visible and show
+            -- which argument slot the user is currently typing.
+            createSuggestionEntry(cmd, 1)
+
+            local argTokens = {}
+            for token in rest:gmatch("%S+") do
+                table.insert(argTokens, token)
+            end
+            local trailingSpace = (rest == "") or (rest:sub(-1) == " ")
+            local argIndex = #argTokens
+            if trailingSpace then
+                argIndex = argIndex + 1
+            end
+            if argIndex < 1 then argIndex = 1 end
+
+            local declaredArgs = (cmd.Args and #cmd.Args > 0) and cmd.Args or { "no args" }
+            local lines = {}
+            for i, argName in ipairs(declaredArgs) do
+                local marker = (i == argIndex) and "-> " or "   "
+                local typed = argTokens[i]
+                if typed and typed ~= "" then
+                    lines[#lines + 1] = marker .. "[" .. tostring(argName) .. "] = " .. typed
+                else
+                    lines[#lines + 1] = marker .. "[" .. tostring(argName) .. "]"
+                end
+            end
+            if #declaredArgs > 0 and argIndex > #declaredArgs then
+                lines[#lines + 1] = "-> [extra] ..."
+            end
+
+            local argHintFrame = create("Frame", {
+                Name = "ArgHint",
+                Size = UDim2.new(1, -4, 0, 72),
+                BackgroundColor3 = Theme.Surface,
+                BackgroundTransparency = 0.15,
+                BorderSizePixel = 0,
+                LayoutOrder = 2,
+                Parent = ResultsFrame,
+            }, {
+                create("UICorner", { CornerRadius = UDim.new(0, 6) }),
+                create("UIStroke", {
+                    Color = Theme.Border,
+                    Thickness = 1,
+                    Transparency = 0.35,
+                }),
+                create("TextLabel", {
+                    Size = UDim2.new(1, -16, 1, -10),
+                    Position = UDim2.new(0, 8, 0, 5),
+                    BackgroundTransparency = 1,
+                    Text = "Arguments:\n" .. table.concat(lines, "\n"),
+                    TextColor3 = Theme.TextDim,
+                    TextSize = 11,
+                    Font = Theme.FontMono,
+                    TextXAlignment = Enum.TextXAlignment.Left,
+                    TextYAlignment = Enum.TextYAlignment.Top,
+                    Parent = argHintFrame,
+                }),
+            })
+
+            CommandCount.Text = "1 command  ·  arg " .. tostring(argIndex)
             return
         end
     end
@@ -8244,7 +8907,8 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
             end
         end
     elseif input.KeyCode == smoothFlyState.hotkey then
-        if not (hotkeyAlwaysActive["smoothfly"] or sfPanel.IsOpen() or smoothFlyState.enabled) then return end
+        local sfPanelOpen = smoothFlyState.panel and smoothFlyState.panel.IsOpen and smoothFlyState.panel.IsOpen() or false
+        if not (hotkeyAlwaysActive["smoothfly"] or sfPanelOpen or smoothFlyState.enabled) then return end
         if smoothFlyState.enabled then
             stopSmoothFly()
             smoothFlyToggle.SetState(false)
