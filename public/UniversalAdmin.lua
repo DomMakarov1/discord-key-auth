@@ -159,6 +159,10 @@ local persistedConfig = {
     accountTier   = nil,  -- API tier string (e.g. Member); shown as "Standard User" in UI
     accountExpiresAt = nil, -- API license expiry ISO (for "Tier - Nd")
     hotkeyAlwaysActive = {},  -- { fly = true, noclip = true, ... }
+    waypoints = {}, -- { ["placeId"] = { name = { x, y, z } } }
+    profiles = {}, -- { profileName = { ...settings } }
+    alerts = { join = true, leave = true, uaUsers = true, spectateRespawn = true },
+    spectateCard = true,
 }
 
 -- Per-command "always active hotkey" tracking.
@@ -475,8 +479,8 @@ Commands["antifling"] = {
 Commands["spectate"] = {
     Name = "spectate",
     Aliases = {"spec", "view"},
-    Description = "Spectate a player (type 'off' to stop)",
-    Args = {"player|off"},
+    Description = "Spectate a player (optional spectator card true/false, off to stop)",
+    Args = {"player|off", "showcard(true|false)"},
     PlayerArg = 1,
     Local = true,
     Execute = function() end,
@@ -574,6 +578,42 @@ Commands["recent"] = {
     Aliases = {"history", "last"},
     Description = "Show your recently executed commands",
     Args = {},
+    Local = true,
+    Execute = function() end,
+}
+
+Commands["waypoint"] = {
+    Name = "waypoint",
+    Aliases = {"wp", "waypoints"},
+    Description = "Manage teleports: add/goto/del/list/clear",
+    Args = {"add|goto|del|list|clear", "name"},
+    Local = true,
+    Execute = function() end,
+}
+
+Commands["serverinfo"] = {
+    Name = "serverinfo",
+    Aliases = {"sinfo", "server"},
+    Description = "Show server diagnostics (ping/fps/player counts/ids)",
+    Args = {},
+    Local = true,
+    Execute = function() end,
+}
+
+Commands["profiles"] = {
+    Name = "profiles",
+    Aliases = {"profile"},
+    Description = "Save/load/delete/list named settings profiles",
+    Args = {"save|load|delete|list", "name"},
+    Local = true,
+    Execute = function() end,
+}
+
+Commands["alerts"] = {
+    Name = "alerts",
+    Aliases = {"alert"},
+    Description = "Configure alerts: join/leave/ua/spectate/all on|off|toggle",
+    Args = {"join|leave|ua|spectate|all", "on|off|toggle"},
     Local = true,
     Execute = function() end,
 }
@@ -4280,8 +4320,99 @@ end
 -------------------------------------------------
 -- SPECTATE / FREECAM
 -------------------------------------------------
-local spectateState = { target = nil }
+local spectateState = { target = nil, showCard = true, cardGui = nil, cardConn = nil }
 local freecamState = { enabled = false, connection = nil, cf = nil }
+
+local function parseBoolArg(raw, defaultValue)
+    if raw == nil then return defaultValue end
+    local v = tostring(raw):lower()
+    if v == "true" or v == "on" or v == "1" or v == "yes" then return true end
+    if v == "false" or v == "off" or v == "0" or v == "no" then return false end
+    return defaultValue
+end
+
+local function destroySpectateCard()
+    if spectateState.cardConn then
+        spectateState.cardConn:Disconnect()
+        spectateState.cardConn = nil
+    end
+    if spectateState.cardGui and spectateState.cardGui.Parent then
+        spectateState.cardGui:Destroy()
+    end
+    spectateState.cardGui = nil
+end
+
+local function buildSpectateCard(target)
+    destroySpectateCard()
+    local gui = Instance.new("ScreenGui")
+    gui.Name = "UniversalAdmin_SpectateCard"
+    gui.ResetOnSpawn = false
+    gui.IgnoreGuiInset = true
+    gui.DisplayOrder = 2000000020
+    gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    gui.Parent = CoreGui
+
+    local card = Instance.new("Frame")
+    card.Size = UDim2.new(0, 255, 0, 104)
+    card.Position = UDim2.new(1, -268, 0.5, -52)
+    card.BackgroundColor3 = Theme.Background
+    card.BackgroundTransparency = 0.08
+    card.BorderSizePixel = 0
+    card.Parent = gui
+    create("UICorner", { CornerRadius = Theme.CornerRadius, Parent = card })
+    create("UIStroke", { Color = Theme.Border, Transparency = 0.35, Thickness = 1, Parent = card })
+
+    local title = create("TextLabel", {
+        Size = UDim2.new(1, -16, 0, 18),
+        Position = UDim2.new(0, 8, 0, 6),
+        BackgroundTransparency = 1,
+        Text = "Spectating: " .. tostring(target.DisplayName),
+        TextColor3 = Theme.Text,
+        TextSize = 12,
+        Font = Theme.FontBold,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Parent = card,
+    })
+
+    local info = create("TextLabel", {
+        Size = UDim2.new(1, -16, 1, -30),
+        Position = UDim2.new(0, 8, 0, 24),
+        BackgroundTransparency = 1,
+        Text = "",
+        TextColor3 = Theme.TextDim,
+        TextSize = 11,
+        Font = Theme.Font,
+        TextWrapped = true,
+        TextYAlignment = Enum.TextYAlignment.Top,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Parent = card,
+    })
+
+    spectateState.cardGui = gui
+    spectateState.cardConn = RunService.Heartbeat:Connect(function()
+        if not spectateState.target or spectateState.target ~= target then
+            destroySpectateCard()
+            return
+        end
+        local tChar = target.Character
+        local tHum = tChar and tChar:FindFirstChildOfClass("Humanoid")
+        local tHrp = tChar and tChar:FindFirstChild("HumanoidRootPart")
+        local myChar = LocalPlayer.Character
+        local myHrp = myChar and myChar:FindFirstChild("HumanoidRootPart")
+        local tool = "None"
+        if tChar then
+            local equipped = tChar:FindFirstChildOfClass("Tool")
+            if equipped then
+                tool = equipped.Name
+            end
+        end
+        local hp = tHum and (math.floor(tHum.Health + 0.5) .. "/" .. math.floor(tHum.MaxHealth + 0.5)) or "n/a"
+        local dist = (tHrp and myHrp) and string.format("%.1f", (tHrp.Position - myHrp.Position).Magnitude) or "n/a"
+        local vel = tHrp and string.format("%.1f", tHrp.AssemblyLinearVelocity.Magnitude) or "n/a"
+        title.Text = "Spectating: " .. tostring(target.DisplayName)
+        info.Text = "Health: " .. hp .. "\nTool: " .. tool .. "\nDistance: " .. dist .. "\nVelocity: " .. vel
+    end)
+end
 
 local function stopSpectate()
     if spectateState.target then
@@ -4294,10 +4425,11 @@ local function stopSpectate()
         end
         spectateState.target = nil
     end
+    destroySpectateCard()
 end
 
 Commands["spectate"].Execute = function(args)
-    if not args or not args[1] then error("Usage: ;spectate <player|off|random|nearest>") end
+    if not args or not args[1] then error("Usage: ;spectate <player|off|random|nearest> [true|false]") end
     if args[1]:lower() == "off" then
         stopSpectate()
         notify("Spectate off", "info", 2)
@@ -4314,7 +4446,16 @@ Commands["spectate"].Execute = function(args)
     if cam then
         cam.CameraSubject = hum
         spectateState.target = target
-        notify("Spectating " .. target.DisplayName, "success", 2)
+        local showCard = parseBoolArg(args[2], persistedConfig.spectateCard ~= false)
+        spectateState.showCard = showCard
+        persistedConfig.spectateCard = showCard
+        savePersistedConfig()
+        if showCard then
+            buildSpectateCard(target)
+        else
+            destroySpectateCard()
+        end
+        notify("Spectating " .. target.DisplayName .. (showCard and " (card on)" or " (card off)"), "success", 2)
     end
 end
 
@@ -4829,6 +4970,285 @@ Commands["recent"].Execute = function()
     end
     notify("Recent commands:\n" .. table.concat(lines, "\n"), "info", 6)
 end
+
+;(function()
+persistedConfig.waypoints = type(persistedConfig.waypoints) == "table" and persistedConfig.waypoints or {}
+persistedConfig.profiles = type(persistedConfig.profiles) == "table" and persistedConfig.profiles or {}
+persistedConfig.alerts = type(persistedConfig.alerts) == "table" and persistedConfig.alerts or {}
+if persistedConfig.alerts.join == nil then persistedConfig.alerts.join = true end
+if persistedConfig.alerts.leave == nil then persistedConfig.alerts.leave = true end
+if persistedConfig.alerts.uaUsers == nil then persistedConfig.alerts.uaUsers = true end
+if persistedConfig.alerts.spectateRespawn == nil then persistedConfig.alerts.spectateRespawn = true end
+if persistedConfig.spectateCard == nil then persistedConfig.spectateCard = true end
+
+local function getWaypointBucket()
+    local placeKey = tostring(game.PlaceId)
+    local bucket = persistedConfig.waypoints[placeKey]
+    if type(bucket) ~= "table" then
+        bucket = {}
+        persistedConfig.waypoints[placeKey] = bucket
+    end
+    return bucket
+end
+
+Commands["waypoint"].Execute = function(args)
+    local action = args and args[1] and tostring(args[1]):lower() or "list"
+    local name = args and args[2] and tostring(args[2]) or ""
+    local bucket = getWaypointBucket()
+    if action == "add" or action == "set" then
+        if name == "" then error("Usage: ;waypoint add <name>") end
+        local char = LocalPlayer.Character
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        if not hrp then error("No HumanoidRootPart") end
+        bucket[name:lower()] = {
+            label = name,
+            x = hrp.Position.X,
+            y = hrp.Position.Y,
+            z = hrp.Position.Z,
+        }
+        savePersistedConfig()
+        notify("Waypoint saved: " .. name, "success", 2)
+        return
+    elseif action == "goto" or action == "tp" then
+        if name == "" then error("Usage: ;waypoint goto <name>") end
+        local wp = bucket[name:lower()]
+        if not wp then error("Waypoint not found: " .. name) end
+        local char = LocalPlayer.Character
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        if not hrp then error("No HumanoidRootPart") end
+        local rot = hrp.CFrame - hrp.Position
+        hrp.CFrame = CFrame.new(wp.x, wp.y, wp.z) * rot
+        notify("Teleported to waypoint: " .. (wp.label or name), "success", 2)
+        return
+    elseif action == "del" or action == "delete" or action == "remove" then
+        if name == "" then error("Usage: ;waypoint del <name>") end
+        if not bucket[name:lower()] then error("Waypoint not found: " .. name) end
+        bucket[name:lower()] = nil
+        savePersistedConfig()
+        notify("Waypoint deleted: " .. name, "info", 2)
+        return
+    elseif action == "clear" then
+        persistedConfig.waypoints[tostring(game.PlaceId)] = {}
+        savePersistedConfig()
+        notify("Cleared waypoints for this game", "info", 2)
+        return
+    elseif action ~= "list" then
+        error("Usage: ;waypoint <add|goto|del|list|clear> [name]")
+    end
+
+    local names = {}
+    for _, wp in pairs(bucket) do
+        names[#names + 1] = tostring(wp.label or "?")
+    end
+    table.sort(names, function(a, b) return string.lower(a) < string.lower(b) end)
+    if #names == 0 then
+        notify("No waypoints saved for this game", "info", 2)
+    else
+        notify("Waypoints (" .. tostring(#names) .. "):\n" .. table.concat(names, ", "), "info", 6)
+    end
+end
+
+Commands["serverinfo"].Execute = function()
+    local ping = "n/a"
+    pcall(function()
+        local stats = game:GetService("Stats")
+        local net = stats:FindFirstChild("Network")
+        local ssi = net and net:FindFirstChild("ServerStatsItem")
+        local item = ssi and ssi:FindFirstChild("Data Ping")
+        if item and item.GetValueString then
+            ping = tostring(item:GetValueString())
+        end
+    end)
+    local fps = "n/a"
+    pcall(function()
+        fps = string.format("%.0f", workspace:GetRealPhysicsFPS())
+    end)
+    local info = table.concat({
+        "Players: " .. tostring(#Players:GetPlayers()) .. "/" .. tostring(Players.MaxPlayers),
+        "Ping: " .. tostring(ping),
+        "Physics FPS: " .. tostring(fps),
+        "PlaceId: " .. tostring(game.PlaceId),
+        "JobId: " .. tostring(game.JobId),
+        "GameId: " .. tostring(game.GameId),
+    }, "\n")
+    notify(info, "info", 8)
+end
+
+local function copyTableShallow(src)
+    local out = {}
+    if type(src) == "table" then
+        for k, v in pairs(src) do
+            out[k] = v
+        end
+    end
+    return out
+end
+
+local function captureProfile()
+    return {
+        prefix = CONFIG.Prefix,
+        nickname = persistedConfig.nickname,
+        accentPrimary = copyTableShallow(persistedConfig.accentPrimary),
+        accentSecondary = copyTableShallow(persistedConfig.accentSecondary),
+        flyHotkey = persistedConfig.flyHotkey,
+        noclipHotkey = persistedConfig.noclipHotkey,
+        clickFlingBind = persistedConfig.clickFlingBind,
+        clickFlingTriggerBind = persistedConfig.clickFlingTriggerBind,
+        clickFlingMode = persistedConfig.clickFlingMode,
+        hotkeyAlwaysActive = copyTableShallow(persistedConfig.hotkeyAlwaysActive),
+        spectateCard = persistedConfig.spectateCard,
+        alerts = copyTableShallow(persistedConfig.alerts),
+    }
+end
+
+local function applyProfile(profile)
+    if type(profile) ~= "table" then
+        return false, "Invalid profile"
+    end
+    if type(profile.prefix) == "string" and #profile.prefix >= 1 and #profile.prefix <= 3 then
+        CONFIG.Prefix = profile.prefix
+        persistedConfig.prefix = profile.prefix
+    end
+    if type(profile.nickname) == "string" and profile.nickname ~= "" then
+        persistedConfig.nickname = profile.nickname
+        PlayerNameLabel.Text = profile.nickname
+    end
+    if type(profile.accentPrimary) == "table" then persistedConfig.accentPrimary = copyTableShallow(profile.accentPrimary) end
+    if type(profile.accentSecondary) == "table" then persistedConfig.accentSecondary = copyTableShallow(profile.accentSecondary) end
+    if type(profile.flyHotkey) == "string" then persistedConfig.flyHotkey = profile.flyHotkey end
+    if type(profile.noclipHotkey) == "string" then persistedConfig.noclipHotkey = profile.noclipHotkey end
+    if type(profile.clickFlingBind) == "string" then persistedConfig.clickFlingBind = profile.clickFlingBind end
+    if type(profile.clickFlingTriggerBind) == "string" then persistedConfig.clickFlingTriggerBind = profile.clickFlingTriggerBind end
+    if type(profile.clickFlingMode) == "string" then persistedConfig.clickFlingMode = profile.clickFlingMode end
+    if type(profile.hotkeyAlwaysActive) == "table" then
+        hotkeyAlwaysActive = { camlock = true, blink = true }
+        persistedConfig.hotkeyAlwaysActive = {}
+        for k, v in pairs(profile.hotkeyAlwaysActive) do
+            if v == true then
+                hotkeyAlwaysActive[k] = true
+                persistedConfig.hotkeyAlwaysActive[k] = true
+            end
+        end
+    end
+    if type(profile.alerts) == "table" then
+        persistedConfig.alerts = copyTableShallow(profile.alerts)
+    end
+    if type(profile.spectateCard) == "boolean" then
+        persistedConfig.spectateCard = profile.spectateCard
+    end
+    savePersistedConfig()
+    return true
+end
+
+Commands["profiles"].Execute = function(args)
+    local action = args and args[1] and tostring(args[1]):lower() or "list"
+    local name = args and table.concat(args, " ", 2) or ""
+    local profiles = persistedConfig.profiles
+    if action == "save" then
+        if name == "" then error("Usage: ;profiles save <name>") end
+        profiles[name] = captureProfile()
+        savePersistedConfig()
+        notify("Profile saved: " .. name, "success", 2)
+        return
+    elseif action == "load" then
+        if name == "" then error("Usage: ;profiles load <name>") end
+        local okApply, err = applyProfile(profiles[name])
+        if not okApply then error(err or "Profile not found") end
+        notify("Profile loaded: " .. name, "success", 3)
+        return
+    elseif action == "delete" or action == "del" or action == "remove" then
+        if name == "" then error("Usage: ;profiles delete <name>") end
+        if not profiles[name] then error("Profile not found: " .. name) end
+        profiles[name] = nil
+        savePersistedConfig()
+        notify("Profile deleted: " .. name, "info", 2)
+        return
+    elseif action ~= "list" then
+        error("Usage: ;profiles <save|load|delete|list> [name]")
+    end
+    local names = {}
+    for k in pairs(profiles) do names[#names + 1] = k end
+    table.sort(names, function(a, b) return string.lower(a) < string.lower(b) end)
+    if #names == 0 then
+        notify("No profiles saved", "info", 2)
+    else
+        notify("Profiles:\n" .. table.concat(names, "\n"), "info", 7)
+    end
+end
+
+local function setAlertField(field, value)
+    if field == "ua" then field = "uaUsers" end
+    if field == "spectate" then field = "spectateRespawn" end
+    if field == "all" then
+        persistedConfig.alerts.join = value
+        persistedConfig.alerts.leave = value
+        persistedConfig.alerts.uaUsers = value
+        persistedConfig.alerts.spectateRespawn = value
+        return
+    end
+    persistedConfig.alerts[field] = value
+end
+
+Commands["alerts"].Execute = function(args)
+    if not args or not args[1] then
+        notify(
+            "Alerts:\njoin=" .. tostring(persistedConfig.alerts.join ~= false) ..
+            " leave=" .. tostring(persistedConfig.alerts.leave ~= false) ..
+            " ua=" .. tostring(persistedConfig.alerts.uaUsers ~= false) ..
+            " spectate=" .. tostring(persistedConfig.alerts.spectateRespawn ~= false),
+            "info",
+            6
+        )
+        return
+    end
+    local channel = tostring(args[1]):lower()
+    local mode = tostring(args[2] or "toggle"):lower()
+    local map = { join = true, leave = true, ua = true, spectate = true, all = true }
+    if not map[channel] then
+        error("Usage: ;alerts <join|leave|ua|spectate|all> [on|off|toggle]")
+    end
+    local current
+    if channel == "join" then current = persistedConfig.alerts.join ~= false
+    elseif channel == "leave" then current = persistedConfig.alerts.leave ~= false
+    elseif channel == "ua" then current = persistedConfig.alerts.uaUsers ~= false
+    elseif channel == "spectate" then current = persistedConfig.alerts.spectateRespawn ~= false
+    else current = (persistedConfig.alerts.join ~= false) and (persistedConfig.alerts.leave ~= false) and (persistedConfig.alerts.uaUsers ~= false) and (persistedConfig.alerts.spectateRespawn ~= false)
+    end
+    local newValue = current
+    if mode == "on" then newValue = true
+    elseif mode == "off" then newValue = false
+    else newValue = not current
+    end
+    setAlertField(channel, newValue)
+    savePersistedConfig()
+    notify("Alerts updated: " .. channel .. " = " .. tostring(newValue), "success", 2)
+end
+
+local function watchAlertEvents(player)
+    player.CharacterAdded:Connect(function()
+        if spectateState.target == player and persistedConfig.alerts.spectateRespawn ~= false then
+            notify(player.DisplayName .. " respawned while spectating", "info", 2.5)
+        end
+    end)
+end
+
+for _, p in ipairs(Players:GetPlayers()) do
+    watchAlertEvents(p)
+end
+
+Players.PlayerAdded:Connect(function(player)
+    watchAlertEvents(player)
+    if persistedConfig.alerts.join ~= false then
+        notify(player.DisplayName .. " joined", "info", 2)
+    end
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+    if persistedConfig.alerts.leave ~= false then
+        notify(player.DisplayName .. " left", "info", 2)
+    end
+end)
+end)()
 
 -------------------------------------------------
 -- TOGGLE STATE REGISTRY
@@ -7088,7 +7508,9 @@ local function _refreshNametags()
             end
             if player ~= LocalPlayer and not nametagState.knownPresent[player.UserId] then
                 nametagState.knownPresent[player.UserId] = true
-                notify(player.DisplayName .. " is using UniversalAdmin in this server", "info", 4)
+                if not persistedConfig.alerts or persistedConfig.alerts.uaUsers ~= false then
+                    notify(player.DisplayName .. " is using UniversalAdmin in this server", "info", 4)
+                end
             end
         else
             if nametagState.tags[player] then
