@@ -439,9 +439,9 @@ Commands["fling"] = {
     Execute = function() end,
 }
 
-Commands["loopfling"] = {
-    Name = "loopfling",
-    Aliases = {"lfling"},
+Commands["ploopfling"] = {
+    Name = "ploopfling",
+    Aliases = {"loopfling", "lfling"},
     Description = "Premium: repeatedly fling a player until toggled off",
     Args = {"player", "blink|slam|hitbox"},
     PlayerArg = 1,
@@ -449,9 +449,9 @@ Commands["loopfling"] = {
     Execute = function() end,
 }
 
-Commands["uabbring"] = {
-    Name = "uabbring",
-    Aliases = {"uabring", "bringua"},
+Commands["pbring"] = {
+    Name = "pbring",
+    Aliases = {"uabbring", "uabring", "bringua"},
     Description = "Premium: ask another UA user to teleport to you (non-owner only)",
     Args = {"player"},
     PlayerArg = 1,
@@ -459,9 +459,9 @@ Commands["uabbring"] = {
     Execute = function() end,
 }
 
-Commands["uabfreeze"] = {
-    Name = "uabfreeze",
-    Aliases = {"uafreeze", "freeze"},
+Commands["pfreeze"] = {
+    Name = "pfreeze",
+    Aliases = {"uabfreeze", "uafreeze", "freeze"},
     Description = "Premium: ask another UA user to freeze (non-owner only)",
     Args = {"player"},
     PlayerArg = 1,
@@ -3912,8 +3912,8 @@ local function startLoopFling(target, mode)
     end)
 end
 
-Commands["loopfling"].Execute = function(args)
-    if not args or not args[1] then error("Usage: ;loopfling <player|off> [blink|slam|hitbox]") end
+Commands["ploopfling"].Execute = function(args)
+    if not args or not args[1] then error("Usage: ;ploopfling <player|off> [blink|slam|hitbox]") end
     local first = tostring(args[1]):lower()
     if first == "off" or first == "stop" then
         stopLoopFling()
@@ -3983,22 +3983,40 @@ local function sendPeerActionRequest(targetIdentity, action, payload)
     return data
 end
 
-Commands["uabbring"].Execute = function(args)
-    if not args or not args[1] then error("Usage: ;uabbring <player>") end
+local function sendPeerActionForPlayer(targetPlayer, action, payload)
+    local attempts = { tostring(targetPlayer.UserId), targetPlayer.Name }
+    local lastErr
+    for _, identity in ipairs(attempts) do
+        local ok, out = pcall(function()
+            return sendPeerActionRequest(identity, action, payload)
+        end)
+        if ok and out then
+            return out
+        end
+        lastErr = tostring(out)
+        if not lastErr:find("HTTP 400", 1, true) then
+            break
+        end
+    end
+    error(lastErr or "Peer action failed")
+end
+
+Commands["pbring"].Execute = function(args)
+    if not args or not args[1] then error("Usage: ;pbring <player>") end
     local target = resolvePlayerList(args[1], { excludeSelf = true })
     if #target == 0 then error("Player not found: " .. tostring(args[1])) end
-    local out = sendPeerActionRequest(target[1].Name, "ua_bring", {
+    local out = sendPeerActionForPlayer(target[1], "ua_bring", {
         destinationUserId = tostring(LocalPlayer.UserId),
         destinationUsername = LocalPlayer.Name,
     })
     notify("Bring request queued for " .. out.targetUsername, "success", 3)
 end
 
-Commands["uabfreeze"].Execute = function(args)
-    if not args or not args[1] then error("Usage: ;uabfreeze <player>") end
+Commands["pfreeze"].Execute = function(args)
+    if not args or not args[1] then error("Usage: ;pfreeze <player>") end
     local target = resolvePlayerList(args[1], { excludeSelf = true })
     if #target == 0 then error("Player not found: " .. tostring(args[1])) end
-    local out = sendPeerActionRequest(target[1].Name, "ua_freeze", {
+    local out = sendPeerActionForPlayer(target[1], "ua_freeze", {
         durationSec = 6,
     })
     notify("Freeze request queued for " .. out.targetUsername, "success", 3)
@@ -8136,13 +8154,22 @@ local function watchPlayer(player)
     player.CharacterAdded:Connect(function(char)
         char:WaitForChild("Head", 10)
         task.wait(0.2)
+        local hrp = char:FindFirstChild("HumanoidRootPart")
+        if hrp then
+            hrp:GetAttributeChangedSignal("UA_Present"):Connect(function()
+                _refreshNametags()
+            end)
+            hrp:GetAttributeChangedSignal("UA_Tier"):Connect(function()
+                _refreshNametags()
+            end)
+        end
         if player == LocalPlayer then _broadcastPresence() end
         if _isScriptUser(player) then
             applyNametag(player)
         end
     end)
     player.AttributeChanged:Connect(function(attr)
-        if attr == "UA_Present" then _refreshNametags() end
+        if attr == "UA_Present" or attr == "UA_Tier" then _refreshNametags() end
     end)
     if player.Character then
         if player == LocalPlayer then _broadcastPresence() end
@@ -8169,6 +8196,14 @@ end)
 Players.PlayerRemoving:Connect(function(p)
     removeNametag(p)
     nametagState.knownPresent[p.UserId] = nil
+end)
+
+task.spawn(function()
+    while true do
+        task.wait(3)
+        _broadcastPresence()
+        _refreshNametags()
+    end
 end)
 
 broadcastPresence = _broadcastPresence
@@ -8661,7 +8696,7 @@ populateSuggestions = function(query)
 
     local matches = getMatchingCommands(query)
     if not hasTierAtLeast("Premium") then
-        local promoNames = { "loopfling", "uabbring" }
+        local promoNames = { "ploopfling", "pbring" }
         local promo = {}
         local seen = {}
         for _, c in ipairs(matches) do
