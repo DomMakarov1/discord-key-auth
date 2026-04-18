@@ -31,6 +31,10 @@ import {
   enqueueWarnByIdentity,
   listWarningsByIdentity,
   getPresenceStatusByIdentity,
+  addAccessBan,
+  removeAccessBans,
+  removeAccessBansForUserIdentity,
+  banFromUserLatestSession,
 } from "./auth.js";
 
 const commands = [
@@ -230,6 +234,31 @@ const commands = [
   new SlashCommandBuilder()
     .setName("script")
     .setDescription("Get the latest UniversalAdmin loadstring"),
+  new SlashCommandBuilder()
+    .setName("hwidban")
+    .setDescription("Admin: block script login for an HWID")
+    .addStringOption((o) => o.setName("hwid").setDescription("HWID string").setRequired(true))
+    .addStringOption((o) => o.setName("reason").setDescription("Optional reason")),
+  new SlashCommandBuilder()
+    .setName("ipban")
+    .setDescription("Admin: block script login for an IP address")
+    .addStringOption((o) => o.setName("ip").setDescription("IPv4/IPv6").setRequired(true))
+    .addStringOption((o) => o.setName("reason").setDescription("Optional reason")),
+  new SlashCommandBuilder()
+    .setName("fullban")
+    .setDescription("Admin: block script login for user's latest HWID + IP (from presence)")
+    .addStringOption((o) =>
+      o.setName("user").setDescription("Username or Discord @/id").setRequired(true)
+    )
+    .addStringOption((o) => o.setName("reason").setDescription("Optional reason")),
+  new SlashCommandBuilder()
+    .setName("unban")
+    .setDescription("Admin: remove access bans by HWID, IP, or user's last known HWID/IP")
+    .addStringOption((o) => o.setName("hwid").setDescription("HWID to unban"))
+    .addStringOption((o) => o.setName("ip").setDescription("IP to unban"))
+    .addStringOption((o) =>
+      o.setName("user").setDescription("Unban last known HWID + IP for this account")
+    ),
 ].map((c) => c.toJSON());
 
 function isAdmin(id) {
@@ -630,6 +659,72 @@ export async function startBot() {
             loader,
             "```",
           ].join("\n"),
+          ephemeral: true,
+        });
+        return;
+      }
+
+      if (interaction.commandName === "hwidban") {
+        requireAdmin(interaction);
+        const hwid = interaction.options.getString("hwid", true);
+        const reason = interaction.options.getString("reason");
+        await addAccessBan({
+          hwid,
+          reason,
+          createdByDiscordId: interaction.user.id,
+        });
+        const short = hwid.length > 40 ? `${hwid.slice(0, 40)}…` : hwid;
+        await interaction.reply({ content: `HWID ban added for \`${short}\``, ephemeral: true });
+        return;
+      }
+
+      if (interaction.commandName === "ipban") {
+        requireAdmin(interaction);
+        const ip = interaction.options.getString("ip", true);
+        const reason = interaction.options.getString("reason");
+        await addAccessBan({
+          ip,
+          reason,
+          createdByDiscordId: interaction.user.id,
+        });
+        await interaction.reply({ content: `IP ban added for \`${ip}\``, ephemeral: true });
+        return;
+      }
+
+      if (interaction.commandName === "fullban") {
+        requireAdmin(interaction);
+        const user = interaction.options.getString("user", true);
+        const reason = interaction.options.getString("reason");
+        await banFromUserLatestSession(user, {
+          reason,
+          createdByDiscordId: interaction.user.id,
+          mode: "full",
+        });
+        await interaction.reply({
+          content: `Full access ban recorded for latest HWID+IP on \`${user}\`.`,
+          ephemeral: true,
+        });
+        return;
+      }
+
+      if (interaction.commandName === "unban") {
+        requireAdmin(interaction);
+        const hwid = interaction.options.getString("hwid");
+        const ip = interaction.options.getString("ip");
+        const user = interaction.options.getString("user");
+        let deleted;
+        if (user && !hwid && !ip) {
+          const out = await removeAccessBansForUserIdentity(user);
+          deleted = out.deleted;
+        } else {
+          if (!hwid && !ip) {
+            throw new Error("Provide hwid, ip, or user");
+          }
+          const out = await removeAccessBans({ hwid, ip });
+          deleted = out.deleted;
+        }
+        await interaction.reply({
+          content: `Removed **${deleted}** access ban row(s).`,
           ephemeral: true,
         });
         return;

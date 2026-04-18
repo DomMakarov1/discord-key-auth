@@ -94,3 +94,30 @@ model Warning {
 
   @@index([userId, createdAt])
 }
+
+/// Tracks failed script-login attempts per HWID (executor fingerprint).
+/// Escalation tier resets each UTC calendar day.
+model HwidLoginState {
+  id Int       @id @default(autoincrement())
+  hwid        String    @unique
+  failCount   Int       @default(0)
+  /// 0 = next lockout 5m, 1 = 20m, 2 = 60m (caps at 2)
+  escalation  Int       @default(0)
+  lockedUntil DateTime?
+  dayKey      String    @default("")
+  updatedAt   DateTime  @updatedAt
+  createdAt   DateTime  @default(now())
+}
+
+/// Blocks script login from a device (HWID and/or IP).
+model AccessBan {
+  id                 Int      @id @default(autoincrement())
+  hwid               String?
+  ip                 String?
+  reason             String?
+  createdByDiscordId String?
+  createdAt          DateTime @default(now())
+
+  @@index([hwid])
+  @@index([ip])
+}

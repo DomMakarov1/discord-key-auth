@@ -75,6 +75,211 @@ async function isUserBlacklistedNow(user) {
   return false;
 }
 
+/** Structured auth errors for HTTP layer (code + optional lockout time). */
+function authReject(message, code, extra = {}) {
+  const e = new Error(message);
+  e.authCode = code;
+  if (extra.lockoutUntil != null) e.lockoutUntil = extra.lockoutUntil;
+  return e;
+}
+
+function utcDayKey(d = new Date()) {
+  return d.toISOString().slice(0, 10);
+}
+
+export function normalizeClientHwid(hwid) {
+  if (hwid == null) return null;
+  const s = String(hwid).trim();
+  if (!s) return null;
+  return s.slice(0, 200);
+}
+
+export function normalizeClientIp(ip) {
+  if (ip == null) return null;
+  const s = String(ip).trim();
+  if (!s) return null;
+  return s.slice(0, 100);
+}
+
+async function findAccessBan({ hwid, ip }) {
+  const or = [];
+  if (hwid) or.push({ hwid });
+  if (ip) or.push({ ip });
+  if (!or.length) return null;
+  return prisma.accessBan.findFirst({
+    where: { OR: or },
+    orderBy: { createdAt: "desc" },
+  });
+}
+
+export async function assertNotAccessBanned({ hwid, ip }) {
+  const ban = await findAccessBan({ hwid, ip });
+  if (!ban) return;
+  const reason = ban.reason ? ` Reason: ${ban.reason}` : "";
+  throw authReject(
+    `Your device cannot sign in. Appeal in the Universal Admin Discord.${reason}`,
+    "ACCESS_BANNED"
+  );
+}
+
+async function assertHwidNotLocked(hwid) {
+  if (!hwid) return;
+  let row = await prisma.hwidLoginState.findUnique({ where: { hwid } });
+  if (!row) return;
+  if (row.lockedUntil && new Date(row.lockedUntil) <= new Date()) {
+    await prisma.hwidLoginState.update({
+      where: { hwid },
+      data: { lockedUntil: null },
+    });
+    return;
+  }
+  if (row.lockedUntil && new Date(row.lockedUntil) > new Date()) {
+    const iso = new Date(row.lockedUntil).toISOString();
+    throw authReject(
+      `Too many failed login attempts from this device. Try again after ${iso}.`,
+      "LOGIN_LOCKOUT",
+      { lockoutUntil: iso }
+    );
+  }
+}
+
+async function recordHwidLoginFailure(hwid) {
+  if (!hwid) return;
+  const today = utcDayKey();
+  let row = await prisma.hwidLoginState.findUnique({ where: { hwid } });
+  if (!row) {
+    row = await prisma.hwidLoginState.create({
+      data: { hwid, failCount: 0, escalation: 0, dayKey: today, lockedUntil: null },
+    });
+  }
+  if (row.lockedUntil && new Date(row.lockedUntil) > new Date()) {
+    return;
+  }
+  let { failCount, escalation, dayKey } = row;
+  if (dayKey !== today) {
+    failCount = 0;
+    escalation = 0;
+    dayKey = today;
+  }
+  failCount += 1;
+  if (failCount < 5) {
+    await prisma.hwidLoginState.update({
+      where: { hwid },
+      data: { failCount, escalation, dayKey },
+    });
+    return;
+  }
+  const durations = [5 * 60 * 1000, 20 * 60 * 1000, 60 * 60 * 1000];
+  const idx = Math.min(escalation, 2);
+  const lockedUntil = new Date(Date.now() + durations[idx]);
+  const nextEsc = Math.min(escalation + 1, 2);
+  await prisma.hwidLoginState.update({
+    where: { hwid },
+    data: {
+      failCount: 0,
+      escalation: nextEsc,
+      dayKey: today,
+      lockedUntil,
+    },
+  });
+}
+
+async function clearHwidLoginOnSuccess(hwid) {
+  if (!hwid) return;
+  await prisma.hwidLoginState.upsert({
+    where: { hwid },
+    create: { hwid, failCount: 0, escalation: 0, dayKey: utcDayKey(), lockedUntil: null },
+    update: { failCount: 0, lockedUntil: null },
+  });
+}
+
+export async function getScriptAccessStatus({ hwid, ip }) {
+  const h = normalizeClientHwid(hwid);
+  const p = normalizeClientIp(ip);
+  try {
+    await assertNotAccessBanned({ hwid: h, ip: p });
+  } catch (e) {
+    if (e.authCode === "ACCESS_BANNED") {
+      return { canLogin: false, code: e.authCode, message: e.message, lockoutUntil: null };
+    }
+    throw e;
+  }
+  try {
+    await assertHwidNotLocked(h);
+  } catch (e) {
+    if (e.authCode === "LOGIN_LOCKOUT") {
+      return {
+        canLogin: false,
+        code: e.authCode,
+        message: e.message,
+        lockoutUntil: e.lockoutUntil || null,
+      };
+    }
+    throw e;
+  }
+  return { canLogin: true, code: null, message: null, lockoutUntil: null };
+}
+
+export async function addAccessBan({ hwid, ip, reason, createdByDiscordId }) {
+  const h = normalizeClientHwid(hwid);
+  const p = normalizeClientIp(ip);
+  if (!h && !p) throw new Error("hwid and/or ip required");
+  return prisma.accessBan.create({
+    data: {
+      hwid: h || null,
+      ip: p || null,
+      reason: reason ? String(reason).slice(0, 500) : null,
+      createdByDiscordId: createdByDiscordId ? String(createdByDiscordId) : null,
+    },
+  });
+}
+
+export async function removeAccessBans({ hwid, ip }) {
+  const h = normalizeClientHwid(hwid);
+  const p = normalizeClientIp(ip);
+  const or = [];
+  if (h) or.push({ hwid: h });
+  if (p) or.push({ ip: p });
+  if (!or.length) throw new Error("hwid and/or ip required to unban");
+  const out = await prisma.accessBan.deleteMany({ where: { OR: or } });
+  return { deleted: out.count };
+}
+
+export async function removeAccessBansForUserIdentity(identity) {
+  const user = await getUserByIdentity(identity);
+  const sess = await prisma.session.findFirst({
+    where: { userId: user.id },
+    orderBy: { lastSeenAt: "desc" },
+  });
+  const h = normalizeClientHwid(sess?.hwid);
+  const p = normalizeClientIp(sess?.lastIp);
+  if (!h && !p) throw new Error("No HWID/IP on record for this user");
+  return removeAccessBans({ hwid: h, ip: p });
+}
+
+export async function banFromUserLatestSession(identity, { reason, createdByDiscordId, mode }) {
+  const user = await getUserByIdentity(identity);
+  const sess = await prisma.session.findFirst({
+    where: { userId: user.id },
+    orderBy: { lastSeenAt: "desc" },
+  });
+  const hwid = normalizeClientHwid(sess?.hwid);
+  const ip = normalizeClientIp(sess?.lastIp);
+  if (mode === "hwid") {
+    if (!hwid) throw new Error("No HWID on file for this user (need a recent script run / presence)");
+    return addAccessBan({ hwid, reason, createdByDiscordId });
+  }
+  if (mode === "ip") {
+    if (!ip) throw new Error("No IP on file for this user (need a recent script run / presence)");
+    return addAccessBan({ ip, reason, createdByDiscordId });
+  }
+  if (mode === "full") {
+    if (!hwid && !ip) throw new Error("No HWID/IP on file for this user (need a recent script run / presence)");
+    return addAccessBan({ hwid: hwid || undefined, ip: ip || undefined, reason, createdByDiscordId });
+  }
+  throw new Error("Invalid ban mode");
+}
+
 export async function registerUser({ username, password, discordId }) {
   const exists = await prisma.user.findUnique({ where: { username } });
   if (exists) throw new Error("Username already exists");
@@ -409,16 +614,30 @@ export async function deleteAccount(username) {
   return { username: user.username };
 }
 
-export async function scriptLoginWithPassword({ username, password }) {
+export async function scriptLoginWithPassword({ username, password, hwid, ip }) {
+  const h = normalizeClientHwid(hwid);
+  const p = normalizeClientIp(ip);
+  await assertNotAccessBanned({ hwid: h, ip: p });
+  await assertHwidNotLocked(h);
+
   const user = await prisma.user.findUnique({ where: { username } });
-  if (!user) throw new Error("Account does not exist");
+  if (!user) {
+    await recordHwidLoginFailure(h);
+    throw new Error("Invalid username or password");
+  }
   if (await isUserBlacklistedNow(user)) throw new Error("Account blacklisted");
   const ok = await bcrypt.compare(password, user.passwordHash);
-  if (!ok) throw new Error("Invalid username or password");
+  if (!ok) {
+    await recordHwidLoginFailure(h);
+    throw new Error("Invalid username or password");
+  }
 
   const now = new Date();
   const activeLicense = await getBestActiveLicense(user.id);
-  if (!activeLicense) throw new Error("No active key/license");
+  if (!activeLicense) {
+    await recordHwidLoginFailure(h);
+    throw new Error("No active key/license");
+  }
 
   const key = await prisma.key.findFirst({
     where: {
@@ -427,7 +646,10 @@ export async function scriptLoginWithPassword({ username, password }) {
     },
     orderBy: [{ redeemedAt: "desc" }, { createdAt: "desc" }],
   });
-  if (!key) throw new Error("No affiliated key found");
+  if (!key) {
+    await recordHwidLoginFailure(h);
+    throw new Error("No affiliated key found");
+  }
 
   const jti = nanoid(24);
   await prisma.session.create({
@@ -451,6 +673,8 @@ export async function scriptLoginWithPassword({ username, password }) {
     keyCode: key.code,
   });
 
+  await clearHwidLoginOnSuccess(h);
+
   return {
     token,
     tier: effectiveTier,
@@ -459,21 +683,38 @@ export async function scriptLoginWithPassword({ username, password }) {
   };
 }
 
-export async function scriptLoginWithSavedKey({ username, keyCode }) {
+export async function scriptLoginWithSavedKey({ username, keyCode, hwid, ip }) {
+  const h = normalizeClientHwid(hwid);
+  const p = normalizeClientIp(ip);
+  await assertNotAccessBanned({ hwid: h, ip: p });
+  await assertHwidNotLocked(h);
+
   const user = await prisma.user.findUnique({ where: { username } });
-  if (!user) throw new Error("Account does not exist");
+  if (!user) {
+    await recordHwidLoginFailure(h);
+    throw new Error("Account does not exist");
+  }
   if (await isUserBlacklistedNow(user)) throw new Error("Account blacklisted");
 
   const key = await prisma.key.findUnique({ where: { code: keyCode } });
-  if (!key) throw new Error("Invalid key");
+  if (!key) {
+    await recordHwidLoginFailure(h);
+    throw new Error("Invalid key");
+  }
   const affiliated =
     (key.assignedToId && key.assignedToId === user.id) ||
     (key.redeemedById && key.redeemedById === user.id);
-  if (!affiliated) throw new Error("Key not affiliated");
+  if (!affiliated) {
+    await recordHwidLoginFailure(h);
+    throw new Error("Key not affiliated");
+  }
 
   const now = new Date();
   const activeLicense = await getBestActiveLicense(user.id);
-  if (!activeLicense) throw new Error("No active key/license");
+  if (!activeLicense) {
+    await recordHwidLoginFailure(h);
+    throw new Error("No active key/license");
+  }
 
   const jti = nanoid(24);
   await prisma.session.create({
@@ -491,6 +732,7 @@ export async function scriptLoginWithSavedKey({ username, keyCode }) {
     discordId: user.discordId || null,
     keyCode,
   });
+  await clearHwidLoginOnSuccess(h);
   return { token, tier: effectiveTier, expiresAt: activeLicense.expiresAt, key: key.code };
 }
 

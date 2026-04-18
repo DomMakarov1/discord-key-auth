@@ -11,6 +11,7 @@ import {
   fetchPendingClientCommands,
   ackClientCommand,
   enqueuePeerClientAction,
+  getScriptAccessStatus,
 } from "./auth.js";
 import { prisma } from "./db.js";
 
@@ -25,6 +26,18 @@ export function createApi() {
       return forwarded.split(",")[0].trim();
     }
     return req.ip || req.socket?.remoteAddress || null;
+  };
+
+  const sendAuthFailure = (res, err, fallbackStatus = 401) => {
+    if (err && err.authCode) {
+      return res.status(fallbackStatus).json({
+        ok: false,
+        error: err.message,
+        code: err.authCode,
+        lockoutUntil: err.lockoutUntil || undefined,
+      });
+    }
+    return res.status(fallbackStatus).json({ ok: false, error: err?.message || "error" });
   };
   const extractToken = (req) => {
     const auth = req.headers.authorization || "";
@@ -83,27 +96,50 @@ export function createApi() {
 
   app.post("/auth/script-login", async (req, res) => {
     try {
-      const { username, password } = req.body || {};
+      const { username, password, hwid } = req.body || {};
       if (!username || !password) {
         return res.status(400).json({ ok: false, error: "username and password required" });
       }
-      const result = await scriptLoginWithPassword({ username, password });
+      const result = await scriptLoginWithPassword({
+        username,
+        password,
+        hwid,
+        ip: getRequestIp(req),
+      });
       res.json({ ok: true, ...result });
     } catch (err) {
-      res.status(401).json({ ok: false, error: err.message });
+      return sendAuthFailure(res, err);
     }
   });
 
   app.post("/auth/script-login-key", async (req, res) => {
     try {
-      const { username, key } = req.body || {};
+      const { username, key, hwid } = req.body || {};
       if (!username || !key) {
         return res.status(400).json({ ok: false, error: "username and key required" });
       }
-      const result = await scriptLoginWithSavedKey({ username, keyCode: key });
+      const result = await scriptLoginWithSavedKey({
+        username,
+        keyCode: key,
+        hwid,
+        ip: getRequestIp(req),
+      });
       res.json({ ok: true, ...result });
     } catch (err) {
-      res.status(401).json({ ok: false, error: err.message });
+      return sendAuthFailure(res, err);
+    }
+  });
+
+  app.post("/auth/access-status", async (req, res) => {
+    try {
+      const { hwid } = req.body || {};
+      const status = await getScriptAccessStatus({
+        hwid,
+        ip: getRequestIp(req),
+      });
+      res.json({ ok: true, ...status });
+    } catch (err) {
+      return sendAuthFailure(res, err);
     }
   });
 
