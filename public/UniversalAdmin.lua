@@ -749,9 +749,18 @@ Commands["hitbox"] = {
 Commands["camlock"] = {
     Name = "camlock",
     Aliases = {"cl", "lockon", "aimlock"},
-    Description = "Smooth camera lock onto a player's head/torso (bindable)",
+    Description = "Arm aim assist on a player; hold aim bind to pull camera (see ;aimbot)",
     Args = {"player|off"},
     PlayerArg = 1,
+    Local = true,
+    Execute = function() end,
+}
+
+Commands["aimbot"] = {
+    Name = "aimbot",
+    Aliases = {"aim", "aimassist"},
+    Description = "Open aim assist settings (cam lock, silent, hit part, binds)",
+    Args = {},
     Local = true,
     Execute = function() end,
 }
@@ -1112,7 +1121,7 @@ local MainFrame = create("Frame", {
     BackgroundColor3 = Theme.Background,
     BackgroundTransparency = 0,
     BorderSizePixel = 0,
-    ClipsDescendants = true,
+    ClipsDescendants = false,
     Parent = ScreenGui,
 }, {
     create("UICorner", { CornerRadius = Theme.CornerRadiusLg }),
@@ -1210,22 +1219,11 @@ local KeyHint = create("TextLabel", {
     }),
 })
 
--- Divider below header
-local Divider = create("Frame", {
-    Name = "Divider",
-    Size = UDim2.new(1, -24, 0, 1),
-    Position = UDim2.new(0, 12, 0, 54),
-    BackgroundColor3 = Theme.Border,
-    BackgroundTransparency = 0.5,
-    BorderSizePixel = 0,
-    Parent = MainFrame,
-})
-
--- Results / suggestions scroll area
+-- Results / suggestions scroll area (sits below header + filter row; no divider lines)
 local ResultsFrame = create("ScrollingFrame", {
     Name = "Results",
-    Size = UDim2.new(1, -16, 1, -96),
-    Position = UDim2.new(0, 8, 0, 58),
+    Size = UDim2.new(1, -16, 1, -128),
+    Position = UDim2.new(0, 8, 0, 90),
     BackgroundTransparency = 1,
     BorderSizePixel = 0,
     ScrollBarThickness = 3,
@@ -5903,6 +5901,7 @@ Commands["unload"].Execute = function()
         pcall(function() if stopSpectate then stopSpectate() end end)
         pcall(function() if stopFreecam then stopFreecam() end end)
         pcall(function() if stopAntiFling then stopAntiFling() end end)
+        pcall(function() if stopCamlock then stopCamlock() end end)
         -- Clean up nametag BillboardGuis (parented to character Heads, not CoreGui)
         pcall(function()
             if nametagState and nametagState.tags then
@@ -6986,30 +6985,163 @@ end
 end -- do (hitbox scope)
 
 -------------------------------------------------
--- CAMLOCK (smooth camera lock onto player)
+-- CAMLOCK / AIM ASSIST
 -------------------------------------------------
 local camlockState = {
-    enabled = false,
+    armed = false,
     target = nil,
     hotkey = Enum.KeyCode.J,
-    connection = nil,
-    sensitivity = 0.15,
+    aimHoldUseMouse = false,
+    aimHoldKey = Enum.KeyCode.LeftShift,
+    aimHoldMouseButton = Enum.UserInputType.MouseButton2,
+    -- Camera lerp responsiveness (~0.5 = very smooth, ~18 = snappy); driven by panel stepper.
+    smoothStrength = 4,
+    silent = false,
+    hitPart = "Head",
+    silentMouseWarned = false,
+    uiToggle = nil,
+    targetStatusLabel = nil,
+    smoothedAimWorld = nil,
+    _prevAimHold = false,
+    -- Full aim-assist cone width (degrees). Pull / silent only when target is within this cone from look vector.
+    aimConeDeg = 38,
+    fovBoxVisible = false,
+    aimZoomEnabled = false,
+    aimZoomFov = 78,
+    _savedAimFov = nil,
 }
 
 local stopCamlock, startCamlock
+local pickNearestCamlockTarget
+local updateCamlockTargetLabel
+
+;(function()
+
+local CAMLOCK_RS_NAME = "UniversalAdminCamlock"
+-- New crosshair pick must be this many pixels closer (screen space) to switch targets — reduces flicker.
+local CROSSHAIR_SWITCH_MARGIN = 36
+
+local function getCamlockAimPart(character)
+    if not character then return nil end
+    local h = camlockState.hitPart
+    if h == "Head" then
+        return character:FindFirstChild("Head") or character:FindFirstChild("HumanoidRootPart")
+    elseif h == "UpperTorso" then
+        return character:FindFirstChild("UpperTorso") or character:FindFirstChild("Torso")
+    elseif h == "LowerTorso" then
+        return character:FindFirstChild("LowerTorso") or character:FindFirstChild("Torso")
+    elseif h == "HumanoidRootPart" then
+        return character:FindFirstChild("HumanoidRootPart")
+    end
+    return character:FindFirstChild("Head") or character:FindFirstChild("HumanoidRootPart")
+end
+
+local function viewportDistFromCrosshair(worldPos)
+    local camera = workspace.CurrentCamera
+    if not camera then return math.huge end
+    local mouse = UserInputService:GetMouseLocation()
+    local screen, onScreen = camera:WorldToViewportPoint(worldPos)
+    if not onScreen or screen.Z <= 0 then return math.huge end
+    local dx = screen.X - mouse.X
+    local dy = screen.Y - mouse.Y
+    return math.sqrt(dx * dx + dy * dy)
+end
+
+local function getPlayerClosestToCrosshair()
+    local bestPlayer, bestDist = nil, math.huge
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer and p.Character then
+            local part = getCamlockAimPart(p.Character)
+            if part then
+                local d = viewportDistFromCrosshair(part.Position)
+                if d < bestDist then
+                    bestDist = d
+                    bestPlayer = p
+                end
+            end
+        end
+    end
+    return bestPlayer, bestDist
+end
+
+local function camlockAimHoldPressed()
+    if camlockState.aimHoldUseMouse then
+        return UserInputService:IsMouseButtonPressed(camlockState.aimHoldMouseButton)
+    end
+    return UserInputService:IsKeyDown(camlockState.aimHoldKey)
+end
+
+local function angleDegLookToWorldPoint(cam, worldPos)
+    local camPos = cam.CFrame.Position
+    local toT = worldPos - camPos
+    if toT.Magnitude < 0.05 then return 0 end
+    local dot = math.clamp(cam.CFrame.LookVector:Dot(toT.Unit), -1, 1)
+    return math.deg(math.acos(dot))
+end
+
+local function camlockTargetInAimCone(cam, worldPos)
+    local half = camlockState.aimConeDeg * 0.5
+    return angleDegLookToWorldPoint(cam, worldPos) <= half + 0.35
+end
+
+-- Master armed + have target + user holding aim bind (camera / silent applies only then).
+local function camlockShouldApply()
+    if not camlockState.armed or not camlockState.target then return false end
+    return camlockAimHoldPressed()
+end
+
+updateCamlockTargetLabel = function()
+    local lbl = camlockState.targetStatusLabel
+    if not lbl then return end
+    local t = camlockState.target
+    if t and t.Parent and t.Character then
+        lbl.Text = "Target: " .. t.DisplayName
+    else
+        lbl.Text = "Target: none"
+    end
+end
+
+pickNearestCamlockTarget = function()
+    local myChar = LocalPlayer.Character
+    local myHrp = myChar and myChar:FindFirstChild("HumanoidRootPart")
+    if not myHrp then return nil end
+    local best, bestDist = nil, math.huge
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer and p.Character then
+            local thrp = p.Character:FindFirstChild("HumanoidRootPart")
+            if thrp then
+                local d = (thrp.Position - myHrp.Position).Magnitude
+                if d < bestDist then best, bestDist = p, d end
+            end
+        end
+    end
+    return best
+end
 
 stopCamlock = function()
-    camlockState.enabled = false
+    camlockState.armed = false
     camlockState.target = nil
-    if camlockState.connection then
-        camlockState.connection:Disconnect()
-        camlockState.connection = nil
+    camlockState.smoothedAimWorld = nil
+    camlockState._prevAimHold = false
+    if camlockState._savedAimFov ~= nil then
+        local c = workspace.CurrentCamera
+        if c then
+            c.FieldOfView = camlockState._savedAimFov
+        end
+        camlockState._savedAimFov = nil
     end
+    pcall(function()
+        RunService:UnbindFromRenderStep(CAMLOCK_RS_NAME)
+    end)
     setToggleState("camlock", false)
+    if camlockState.uiToggle then
+        camlockState.uiToggle.SetState(false)
+    end
+    updateCamlockTargetLabel()
 end
 
 startCamlock = function(target)
-    if camlockState.enabled then stopCamlock() end
+    if camlockState.armed then stopCamlock() end
 
     local targetChar = target.Character
     if not targetChar then
@@ -7017,30 +7149,126 @@ startCamlock = function(target)
         return false
     end
 
-    camlockState.enabled = true
+    camlockState.armed = true
     camlockState.target = target
     setToggleState("camlock", true)
+    if camlockState.uiToggle then
+        camlockState.uiToggle.SetState(true)
+    end
+    updateCamlockTargetLabel()
 
-    camlockState.connection = RunService.RenderStepped:Connect(function(dt)
-        if not camlockState.enabled then return end
+    pcall(function()
+        RunService:UnbindFromRenderStep(CAMLOCK_RS_NAME)
+    end)
+    RunService:BindToRenderStep(CAMLOCK_RS_NAME, Enum.RenderPriority.Last.Value, function(dt)
+        if not camlockState.armed then return end
         local cam = workspace.CurrentCamera
         if not cam then return end
 
-        local tChar = camlockState.target and camlockState.target.Character
+        local holdNow = camlockAimHoldPressed()
+        if holdNow then
+            local cand, candDist = getPlayerClosestToCrosshair()
+            if cand then
+                if not camlockState._prevAimHold then
+                    if camlockState.target ~= cand then
+                        camlockState.target = cand
+                        camlockState.smoothedAimWorld = nil
+                        updateCamlockTargetLabel()
+                    end
+                else
+                    local cur = camlockState.target
+                    if cur ~= cand then
+                        local curDist = math.huge
+                        if cur and cur.Character then
+                            local cp = getCamlockAimPart(cur.Character)
+                            if cp then
+                                curDist = viewportDistFromCrosshair(cp.Position)
+                            end
+                        end
+                        if candDist <= curDist - CROSSHAIR_SWITCH_MARGIN then
+                            camlockState.target = cand
+                            camlockState.smoothedAimWorld = nil
+                            updateCamlockTargetLabel()
+                        end
+                    end
+                end
+            end
+        end
+        camlockState._prevAimHold = holdNow
+
+        local tPlayer = camlockState.target
+        local tChar = tPlayer and tPlayer.Character
         if not tChar or not tChar.Parent then
             stopCamlock()
             notify("Camlock target lost", "warning", 2)
             return
         end
 
-        local targetPart = tChar:FindFirstChild("Head") or tChar:FindFirstChild("HumanoidRootPart")
+        local targetPart = getCamlockAimPart(tChar)
         if not targetPart then return end
 
-        local targetPos = targetPart.Position
-        local camPos = cam.CFrame.Position
-        local desiredCF = CFrame.lookAt(camPos, targetPos)
-        local alpha = math.clamp(camlockState.sensitivity * (dt * 60), 0.01, 1)
-        cam.CFrame = cam.CFrame:Lerp(desiredCF, alpha)
+        local rawPos = targetPart.Position
+        local apply = camlockShouldApply()
+        local inCone = apply and camlockTargetInAimCone(cam, rawPos)
+        local applyCorrection = inCone
+
+        if applyCorrection then
+            if not camlockState.smoothedAimWorld then
+                camlockState.smoothedAimWorld = rawPos
+            else
+                local posRate = math.clamp(9 * dt, 0, 1)
+                camlockState.smoothedAimWorld = camlockState.smoothedAimWorld:Lerp(rawPos, posRate)
+            end
+        else
+            camlockState.smoothedAimWorld = nil
+        end
+
+        if camlockState.aimZoomEnabled and applyCorrection then
+            if camlockState._savedAimFov == nil then
+                camlockState._savedAimFov = cam.FieldOfView
+            end
+            cam.FieldOfView = camlockState.aimZoomFov
+        elseif camlockState._savedAimFov ~= nil then
+            cam.FieldOfView = camlockState._savedAimFov
+            camlockState._savedAimFov = nil
+        end
+
+        local aimPos = (applyCorrection and camlockState.smoothedAimWorld) or rawPos
+
+        if camlockState.silent then
+            if applyCorrection then
+                local mouse = LocalPlayer:GetMouse()
+                if mouse then
+                    local dir = aimPos - cam.CFrame.Position
+                    if dir.Magnitude > 0.05 then
+                        local u = dir.Unit
+                        local lookAt = CFrame.lookAt(aimPos - u * 0.25, aimPos + u * 0.5)
+                        local ok = pcall(function()
+                            mouse.Hit = lookAt
+                            mouse.Target = targetPart
+                        end)
+                        if not ok and not camlockState.silentMouseWarned then
+                            camlockState.silentMouseWarned = true
+                            notify("Silent aim: Mouse.Hit not writable here", "warning", 4)
+                        end
+                    end
+                end
+            end
+        else
+            if applyCorrection then
+                local angErr = angleDegLookToWorldPoint(cam, aimPos)
+                if angErr < 0.12 then
+                    -- skip micro-tweaks that fight the default camera / float error
+                else
+                    local camPos = cam.CFrame.Position
+                    local desiredCF = CFrame.lookAt(camPos, aimPos)
+                    local k = math.clamp(camlockState.smoothStrength, 0.25, 40)
+                    local alpha = 1 - math.exp(-k * dt)
+                    if alpha < 0.001 then alpha = 0.001 end
+                    cam.CFrame = cam.CFrame:Lerp(desiredCF, alpha)
+                end
+            end
+        end
     end)
 
     return true
@@ -7048,9 +7276,9 @@ end
 
 Commands["camlock"].Execute = function(args)
     if not args or not args[1] then
-        if camlockState.enabled then
+        if camlockState.armed then
             stopCamlock()
-            notify("Camlock disabled", "info", 2)
+            notify("Aim assist disarmed", "info", 2)
             return
         end
         error("Usage: ;camlock <player|off>")
@@ -7059,7 +7287,7 @@ Commands["camlock"].Execute = function(args)
     local q = args[1]:lower()
     if q == "off" or q == "stop" or q == "disable" then
         stopCamlock()
-        notify("Camlock disabled", "info", 2)
+        notify("Aimbot disarmed", "info", 2)
         return
     end
 
@@ -7067,9 +7295,285 @@ Commands["camlock"].Execute = function(args)
     if #targets == 0 then error("Player not found: " .. args[1]) end
 
     if startCamlock(targets[1]) then
-        notify("Camlock -> " .. targets[1].DisplayName, "success", 2)
+        notify("Aimbot armed · " .. targets[1].DisplayName .. " · hold aim bind", "success", 2)
     end
 end
+
+-- On-screen square matching aim cone (vertical FOV geometry); updates every frame when visible.
+local camlockFovBox = create("Frame", {
+    Name = "CamlockFovGuide",
+    Parent = ScreenGui,
+    BackgroundTransparency = 1,
+    BorderSizePixel = 0,
+    AnchorPoint = Vector2.new(0.5, 0.5),
+    Position = UDim2.new(0.5, 0, 0.5, 0),
+    Size = UDim2.fromOffset(120, 120),
+    Visible = false,
+    ZIndex = 50,
+}, {
+    create("UICorner", { CornerRadius = UDim.new(0, 6) }),
+    create("UIStroke", {
+        Color = Theme.AccentPrimary,
+        Thickness = 2,
+        Transparency = 0.45,
+    }),
+})
+
+RunService.RenderStepped:Connect(function()
+    if not camlockFovBox.Parent then return end
+    if not camlockState.fovBoxVisible then
+        camlockFovBox.Visible = false
+        return
+    end
+    local camera = workspace.CurrentCamera
+    if not camera then return end
+    camlockFovBox.Visible = true
+    local vy = math.max(camera.ViewportSize.Y, 1)
+    local vx = math.max(camera.ViewportSize.X, 1)
+    local vHalf = math.rad(camera.FieldOfView * 0.5)
+    local coneHalf = math.rad(math.clamp(camlockState.aimConeDeg * 0.5, 0.08, 89))
+    local tanV = math.tan(vHalf)
+    if tanV < 1e-4 then tanV = 1e-4 end
+    local halfPx = (vy * 0.5) * math.tan(coneHalf) / tanV
+    local d = math.floor(math.clamp(halfPx * 2, 28, math.min(vx, vy) * 0.92))
+    camlockFovBox.Size = UDim2.fromOffset(d, d)
+end)
+
+end)()
+
+-- Built in an IIFE: main script was at Luau's ~200 local register cap.
+local aimbotPanel = (function()
+    local panel = createToolPanel({
+        Name = "AimbotPanel",
+        Title = "Aim assist",
+        Width = 280,
+        Height = 668,
+        Position = UDim2.new(0.5, -140, 0.5, -334),
+    })
+
+    local function aimHoldBindLabel()
+        if camlockState.aimHoldUseMouse then
+            local m = camlockState.aimHoldMouseButton
+            if m == Enum.UserInputType.MouseButton1 then return "LMB" end
+            if m == Enum.UserInputType.MouseButton2 then return "RMB" end
+            if m == Enum.UserInputType.MouseButton3 then return "MMB" end
+            return tostring(m.Name)
+        end
+        return camlockState.aimHoldKey.Name
+    end
+
+    local function createAimHoldBinder(parentFrame, position)
+        local container = create("Frame", {
+            Size = UDim2.new(1, 0, 0, 28),
+            Position = position,
+            BackgroundTransparency = 1,
+            Parent = parentFrame,
+        })
+        local btn = create("TextButton", {
+            Size = UDim2.new(0, 56, 1, 0),
+            Position = UDim2.new(0, 0, 0, 0),
+            BackgroundColor3 = Theme.Surface,
+            BorderSizePixel = 0,
+            AutoButtonColor = false,
+            Text = aimHoldBindLabel(),
+            TextColor3 = Theme.AccentPrimary,
+            TextSize = 11,
+            Font = Theme.FontMono,
+            Parent = container,
+        }, {
+            create("UICorner", { CornerRadius = UDim.new(0, 6) }),
+            create("UIStroke", {
+                Color = Theme.AccentPrimary,
+                Thickness = 1,
+                Transparency = 0.5,
+            }),
+        })
+        local hintLabel = create("TextLabel", {
+            Size = UDim2.new(1, -64, 1, 0),
+            Position = UDim2.new(0, 64, 0, 0),
+            BackgroundTransparency = 1,
+            Text = "Key or mouse button",
+            TextColor3 = Theme.TextMuted,
+            TextSize = 11,
+            Font = Theme.Font,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            Parent = container,
+        })
+        btn.MouseButton1Click:Connect(function()
+            playClickSound()
+            btn.Text = "..."
+            hintLabel.Text = "Press a key or mouse button"
+            task.defer(function()
+                local conn
+                conn = UserInputService.InputBegan:Connect(function(input, _)
+                    if input.UserInputType == Enum.UserInputType.Keyboard then
+                        camlockState.aimHoldUseMouse = false
+                        camlockState.aimHoldKey = input.KeyCode
+                    elseif input.UserInputType == Enum.UserInputType.MouseButton1
+                        or input.UserInputType == Enum.UserInputType.MouseButton2
+                        or input.UserInputType == Enum.UserInputType.MouseButton3 then
+                        camlockState.aimHoldUseMouse = true
+                        camlockState.aimHoldMouseButton = input.UserInputType
+                    elseif input.UserInputType == Enum.UserInputType.MouseMovement then
+                        return
+                    else
+                        btn.Text = aimHoldBindLabel()
+                        hintLabel.Text = "Key or mouse button"
+                        conn:Disconnect()
+                        return
+                    end
+                    btn.Text = aimHoldBindLabel()
+                    hintLabel.Text = "Key or mouse button"
+                    conn:Disconnect()
+                end)
+            end)
+        end)
+        return { Refresh = function() btn.Text = aimHoldBindLabel() end }
+    end
+
+    local camlockMasterToggle = createToggleButton(panel.Content, UDim2.new(0, 0, 0, 4), camlockState.armed)
+    camlockState.uiToggle = camlockMasterToggle
+    camlockMasterToggle.OnToggle(function(enabled)
+        if enabled then
+            if camlockState.armed then return end
+            local t = pickNearestCamlockTarget()
+            if t then
+                if not startCamlock(t) then
+                    camlockMasterToggle.SetState(false)
+                else
+                    notify("Aimbot armed · hold aim key to pull camera", "success", 2)
+                end
+            else
+                camlockMasterToggle.SetState(false)
+                notify("No target in range", "warning", 2)
+            end
+        else
+            if camlockState.armed then
+                stopCamlock()
+                notify("Aimbot disarmed", "info", 2)
+            end
+        end
+    end)
+
+    camlockState.targetStatusLabel = create("TextLabel", {
+        Size = UDim2.new(1, 0, 0, 18),
+        Position = UDim2.new(0, 0, 0, 40),
+        BackgroundTransparency = 1,
+        Text = "Target: none",
+        TextColor3 = Theme.TextMuted,
+        TextSize = 12,
+        Font = Theme.Font,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Parent = panel.Content,
+    })
+    updateCamlockTargetLabel()
+
+    createLabel("AIM SMOOTH (low = smooth, high = snappy)", panel.Content, UDim2.new(0, 0, 0, 64))
+    local sensStep = createStepper(panel.Content, UDim2.new(0, 0, 0, 80), 20, 1, 100, 1)
+    sensStep.OnChange(function(v)
+        camlockState.smoothStrength = math.clamp(v * 0.2, 0.15, 25)
+    end)
+
+    createLabel("AIM CONE ° (pull only inside this)", panel.Content, UDim2.new(0, 0, 0, 112))
+    local coneStep = createStepper(panel.Content, UDim2.new(0, 0, 0, 128), camlockState.aimConeDeg, 10, 100, 1)
+    coneStep.OnChange(function(v)
+        camlockState.aimConeDeg = v
+    end)
+
+    createLabel("SHOW FOV BOX", panel.Content, UDim2.new(0, 0, 0, 168))
+    local fovBoxTog = createToggleButton(panel.Content, UDim2.new(0, 0, 0, 184), camlockState.fovBoxVisible)
+    fovBoxTog.OnToggle(function(on)
+        camlockState.fovBoxVisible = on
+    end)
+
+    createLabel("ZOOM FOV WHILE PULLING", panel.Content, UDim2.new(0, 0, 0, 228))
+    local zoomPullTog = createToggleButton(panel.Content, UDim2.new(0, 0, 0, 244), camlockState.aimZoomEnabled)
+    zoomPullTog.OnToggle(function(on)
+        camlockState.aimZoomEnabled = on
+        if not on and camlockState._savedAimFov ~= nil then
+            local c = workspace.CurrentCamera
+            if c then
+                c.FieldOfView = camlockState._savedAimFov
+            end
+            camlockState._savedAimFov = nil
+        end
+    end)
+
+    createLabel("ZOOM FOV (when pulling)", panel.Content, UDim2.new(0, 0, 0, 284))
+    local zoomFovStep = createStepper(panel.Content, UDim2.new(0, 0, 0, 300), camlockState.aimZoomFov, 55, 110, 1)
+    zoomFovStep.OnChange(function(v)
+        camlockState.aimZoomFov = v
+    end)
+
+    createLabel("HIT PART", panel.Content, UDim2.new(0, 0, 0, 340))
+    local hitCycle = createCycleButton(
+        panel.Content,
+        UDim2.new(0, 0, 0, 356),
+        { "Head", "UpperTorso", "LowerTorso", "HumanoidRootPart" },
+        camlockState.hitPart,
+        function(partName)
+            local short = { UpperTorso = "Upper torso", LowerTorso = "Lower torso", HumanoidRootPart = "RootPart" }
+            return short[partName] or partName
+        end
+    )
+    hitCycle.OnChange(function(v)
+        camlockState.hitPart = v
+    end)
+
+    createLabel("SILENT (Mouse.Hit spoof)", panel.Content, UDim2.new(0, 0, 0, 400))
+    local silentTog = createToggleButton(panel.Content, UDim2.new(0, 0, 0, 416), camlockState.silent)
+    silentTog.OnToggle(function(on)
+        camlockState.silent = on
+        if not on then
+            camlockState.silentMouseWarned = false
+        end
+    end)
+
+    createLabel("AIM HOLD (while armed)", panel.Content, UDim2.new(0, 0, 0, 460))
+    local aimHoldBinder = createAimHoldBinder(panel.Content, UDim2.new(0, 0, 0, 476))
+
+    createLabel("TOGGLE AIMBOT KEY", panel.Content, UDim2.new(0, 0, 0, 512))
+    createHotkeyButton(panel.Content, UDim2.new(0, 0, 0, 528), camlockState.hotkey).OnChange(function(key)
+        camlockState.hotkey = key
+    end)
+
+    createLabel("ALWAYS ACTIVE TOGGLE KEY", panel.Content, UDim2.new(0, 0, 0, 564))
+    local alwaysTog = createToggleButton(
+        panel.Content,
+        UDim2.new(0, 0, 0, 580),
+        hotkeyAlwaysActive["camlock"] or false
+    )
+    alwaysTog.OnToggle(function(enabled)
+        hotkeyAlwaysActive["camlock"] = enabled
+        persistedConfig.hotkeyAlwaysActive = persistedConfig.hotkeyAlwaysActive or {}
+        persistedConfig.hotkeyAlwaysActive["camlock"] = enabled or nil
+        savePersistedConfig()
+    end)
+
+    local baseShow = panel.Show
+    panel.Show = function()
+        camlockMasterToggle.SetState(camlockState.armed)
+        silentTog.SetState(camlockState.silent)
+        hitCycle.SetValue(camlockState.hitPart)
+        sensStep.SetValue(math.clamp(math.floor(camlockState.smoothStrength / 0.2 + 0.5), 1, 100))
+        coneStep.SetValue(math.clamp(math.floor(camlockState.aimConeDeg + 0.5), 10, 100))
+        fovBoxTog.SetState(camlockState.fovBoxVisible)
+        zoomPullTog.SetState(camlockState.aimZoomEnabled)
+        zoomFovStep.SetValue(math.clamp(math.floor(camlockState.aimZoomFov + 0.5), 55, 110))
+        alwaysTog.SetState(hotkeyAlwaysActive["camlock"] or false)
+        aimHoldBinder.Refresh()
+        updateCamlockTargetLabel()
+        baseShow()
+    end
+
+    Commands["aimbot"].Execute = function()
+        task.defer(function()
+            panel.Show()
+        end)
+    end
+
+    return panel
+end)()
 
 -------------------------------------------------
 -- SMOOTH FLY (inertia + momentum + camera banking)
@@ -7089,8 +7593,7 @@ local smoothFlyState = {
 local stopSmoothFly, startSmoothFly
 local smoothFlyToggle -- forward ref for hotkey handler
 
-do -- smoothfly scope
-
+;(function()
 local ACCEL = 3.0
 local DECEL = 2.5
 local BANK_MAX = 18
@@ -7303,7 +7806,7 @@ Commands["smoothfly"].Execute = function(args)
     end)
 end
 
-end -- do (smoothfly scope)
+end)()
 
 -------------------------------------------------
 -- BLINK / DASH (instant forward teleport + FOV effect + sound)
@@ -7316,7 +7819,7 @@ local blinkState = {
 
 local doBlink
 
-do -- blink scope
+;(function()
 
 doBlink = function(distance)
     if blinkState.cooldown then return end
@@ -7384,11 +7887,12 @@ Commands["blink"].Execute = function(args)
     doBlink(dist)
 end
 
-end -- do (blink scope)
+end)()
 
 -------------------------------------------------
 -- PLAYER LIST PANEL
 -------------------------------------------------
+;(function()
 local playerListPanel = createToolPanel({
     Name = "PlayerListPanel",
     Title = "Players",
@@ -7584,6 +8088,8 @@ Commands["playerlist"].Execute = function()
         end
     end)
 end
+
+end)()
 
 -------------------------------------------------
 -- INVENTORY PANEL
@@ -8235,6 +8741,53 @@ end
 ;(function()
 local expandedHeight = 380
 
+-- Command palette filters: access tier + category (see COMMAND_CATEGORY_BY_NAME).
+local cmdFilterAccess = "all"
+local cmdFilterCategory = "all"
+local COMMAND_CATEGORY_BY_NAME = {
+    help = "ui", fly = "movement", speed = "movement", noclip = "movement", esp = "player",
+    tp = "movement", goto = "movement", rejoin = "utility", god = "player", reset = "player",
+    jpower = "movement", gravity = "world", f3x = "world", playerlist = "player", inventory = "player",
+    fling = "troll", ploopfling = "troll", pbring = "player", pfreeze = "troll", antifling = "combat",
+    spectate = "player", freecam = "movement", prefix = "ui", clickfling = "troll", bring = "player",
+    respawn = "player", chat = "social", hidechar = "player", hideui = "ui", copy = "ui", settings = "ui",
+    recent = "ui", waypoint = "utility", serverinfo = "utility", profiles = "ui", alerts = "ui",
+    infjump = "movement", invisible = "player", unload = "ui", clicktp = "movement", fullbright = "world",
+    remotespy = "utility", dex = "utility", chatlog = "social", antiafk = "network", trail = "player",
+    pinghop = "network", admincheck = "player", invis = "player", hitbox = "combat", camlock = "combat",
+    aimbot = "combat", smoothfly = "movement", blink = "movement",
+}
+
+local function getCommandCategoryId(cmd)
+    return COMMAND_CATEGORY_BY_NAME[cmd.Name] or "utility"
+end
+
+local function commandPassesCmdFilters(cmd)
+    if cmdFilterAccess == "premium" and not cmd.Premium then
+        return false
+    end
+    if cmdFilterAccess == "local" and not cmd.Local then
+        return false
+    end
+    if cmdFilterAccess == "standard" and cmd.Premium then
+        return false
+    end
+    if cmdFilterCategory ~= "all" and getCommandCategoryId(cmd) ~= cmdFilterCategory then
+        return false
+    end
+    return true
+end
+
+local function filterMatchesForCmdBar(matches)
+    local out = {}
+    for _, cmd in ipairs(matches) do
+        if commandPassesCmdFilters(cmd) then
+            table.insert(out, cmd)
+        end
+    end
+    return out
+end
+
 local function createLocalBadge(parent, rightOffset)
     local badge = create("Frame", {
         Name = "LocalBadge",
@@ -8574,7 +9127,7 @@ local function refreshToggleStates()
     safe("silent", targetingState and targetingState.silent)
     safe("resolver", targetingState and targetingState.velocityResolver)
     if hitboxState then safe("hitbox", hitboxState.enabled) end
-    if camlockState then safe("camlock", camlockState.enabled) end
+    if camlockState then safe("camlock", camlockState.armed) end
     if smoothFlyState then safe("smoothfly", smoothFlyState.enabled) end
     -- Note: clicktp/fullbright/remotespy/antiafk set their own via setToggleState
 end
@@ -8731,8 +9284,18 @@ populateSuggestions = function(query)
         end
     end
 
+    local preFilterCount = #matches
+    matches = filterMatchesForCmdBar(matches)
+
     if #matches == 0 then
-        -- "No commands found" message
+        local emptyText
+        if preFilterCount == 0 then
+            emptyText = query == "" and "No commands registered yet" or ('No commands matching "' .. query .. '"')
+        else
+            emptyText = query == ""
+                and "No commands match the selected filters"
+                or ('No commands matching "' .. query .. '" with these filters')
+        end
         create("Frame", {
             Name = "EmptyState",
             Size = UDim2.new(1, -4, 0, 80),
@@ -8742,10 +9305,11 @@ populateSuggestions = function(query)
             create("TextLabel", {
                 Size = UDim2.new(1, 0, 1, 0),
                 BackgroundTransparency = 1,
-                Text = query == "" and "No commands registered yet" or 'No commands matching "' .. query .. '"',
+                Text = emptyText,
                 TextColor3 = Theme.TextMuted,
                 TextSize = 14,
                 Font = Theme.Font,
+                TextWrapped = true,
                 Parent = ResultsFrame,
             }),
         })
@@ -8757,6 +9321,362 @@ populateSuggestions = function(query)
 
     CommandCount.Text = #matches .. " command" .. (#matches ~= 1 and "s" or "")
 end
+
+local ACCESS_FILTER_OPTIONS = {
+    { key = "all", label = "All access" },
+    { key = "standard", label = "Standard (non-premium)" },
+    { key = "premium", label = "Premium only" },
+    { key = "local", label = "Local only" },
+}
+local CATEGORY_FILTER_OPTIONS = {
+    { key = "all", label = "All types" },
+    { key = "player", label = "Player" },
+    { key = "movement", label = "Movement" },
+    { key = "troll", label = "Troll" },
+    { key = "combat", label = "Combat" },
+    { key = "world", label = "World" },
+    { key = "ui", label = "UI & tools" },
+    { key = "utility", label = "Utility" },
+    { key = "network", label = "Network" },
+    { key = "social", label = "Social" },
+}
+
+local FilterBar = create("Frame", {
+    Name = "CmdFilterBar",
+    Parent = MainFrame,
+    Position = UDim2.new(0, 8, 0, 56),
+    Size = UDim2.new(1, -16, 0, 26),
+    BackgroundTransparency = 1,
+    ZIndex = 6,
+})
+
+local accessShell = create("Frame", {
+    Name = "AccessFilter",
+    Size = UDim2.new(0.49, -2, 1, 0),
+    Position = UDim2.new(0, 0, 0, 0),
+    BackgroundColor3 = Theme.Surface,
+    BackgroundTransparency = 0.15,
+    BorderSizePixel = 0,
+    Parent = FilterBar,
+}, {
+    create("UICorner", { CornerRadius = UDim.new(0, 6) }),
+    create("UIStroke", { Color = Theme.Border, Thickness = 1, Transparency = 0.45 }),
+})
+
+local accessChevron = create("TextLabel", {
+    Name = "Chevron",
+    Parent = accessShell,
+    Size = UDim2.new(0, 14, 0, 14),
+    Position = UDim2.new(0, 8, 0.5, 0),
+    AnchorPoint = Vector2.new(0, 0.5),
+    BackgroundTransparency = 1,
+    Text = "▼",
+    TextSize = 9,
+    Font = Theme.FontBold,
+    TextColor3 = Theme.TextMuted,
+    TextXAlignment = Enum.TextXAlignment.Center,
+    TextYAlignment = Enum.TextYAlignment.Center,
+    Rotation = 0,
+    ZIndex = 2,
+})
+
+local accessLabel = create("TextLabel", {
+    Name = "Label",
+    Parent = accessShell,
+    Size = UDim2.new(1, -30, 1, 0),
+    Position = UDim2.new(0, 26, 0, 0),
+    BackgroundTransparency = 1,
+    Text = "Access · All access",
+    TextSize = 10,
+    Font = Theme.FontBold,
+    TextColor3 = Theme.Text,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    TextTruncate = Enum.TextTruncate.AtEnd,
+    ZIndex = 2,
+})
+
+local accessFilterBtn = create("TextButton", {
+    Name = "Hit",
+    Parent = accessShell,
+    Size = UDim2.new(1, 0, 1, 0),
+    Position = UDim2.new(0, 0, 0, 0),
+    BackgroundTransparency = 1,
+    BorderSizePixel = 0,
+    AutoButtonColor = false,
+    Text = "",
+    ZIndex = 5,
+})
+
+local categoryShell = create("Frame", {
+    Name = "CategoryFilter",
+    Size = UDim2.new(0.49, -2, 1, 0),
+    Position = UDim2.new(0.51, 2, 0, 0),
+    BackgroundColor3 = Theme.Surface,
+    BackgroundTransparency = 0.15,
+    BorderSizePixel = 0,
+    Parent = FilterBar,
+}, {
+    create("UICorner", { CornerRadius = UDim.new(0, 6) }),
+    create("UIStroke", { Color = Theme.Border, Thickness = 1, Transparency = 0.45 }),
+})
+
+local categoryChevron = create("TextLabel", {
+    Name = "Chevron",
+    Parent = categoryShell,
+    Size = UDim2.new(0, 14, 0, 14),
+    Position = UDim2.new(0, 8, 0.5, 0),
+    AnchorPoint = Vector2.new(0, 0.5),
+    BackgroundTransparency = 1,
+    Text = "▼",
+    TextSize = 9,
+    Font = Theme.FontBold,
+    TextColor3 = Theme.TextMuted,
+    TextXAlignment = Enum.TextXAlignment.Center,
+    TextYAlignment = Enum.TextYAlignment.Center,
+    Rotation = 0,
+    ZIndex = 2,
+})
+
+local categoryLabel = create("TextLabel", {
+    Name = "Label",
+    Parent = categoryShell,
+    Size = UDim2.new(1, -30, 1, 0),
+    Position = UDim2.new(0, 26, 0, 0),
+    BackgroundTransparency = 1,
+    Text = "Type · All types",
+    TextSize = 10,
+    Font = Theme.FontBold,
+    TextColor3 = Theme.Text,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    TextTruncate = Enum.TextTruncate.AtEnd,
+    ZIndex = 2,
+})
+
+local categoryFilterBtn = create("TextButton", {
+    Name = "Hit",
+    Parent = categoryShell,
+    Size = UDim2.new(1, 0, 1, 0),
+    Position = UDim2.new(0, 0, 0, 0),
+    BackgroundTransparency = 1,
+    BorderSizePixel = 0,
+    AutoButtonColor = false,
+    Text = "",
+    ZIndex = 5,
+})
+
+local filterDropList = create("ScrollingFrame", {
+    Name = "CmdFilterMenu",
+    Parent = MainFrame,
+    Position = UDim2.new(0, 8, 0, 84),
+    Size = UDim2.new(0.46, -4, 0, 168),
+    BackgroundColor3 = Theme.Background,
+    BackgroundTransparency = 0.05,
+    BorderSizePixel = 0,
+    Visible = false,
+    ZIndex = 40,
+    ClipsDescendants = true,
+    ScrollBarThickness = 3,
+    ScrollBarImageColor3 = Theme.AccentPrimary,
+    AutomaticCanvasSize = Enum.AutomaticSize.Y,
+    CanvasSize = UDim2.new(0, 0, 0, 0),
+}, {
+    create("UICorner", { CornerRadius = UDim.new(0, 6) }),
+    create("UIStroke", { Color = Theme.Border, Thickness = 1, Transparency = 0.35 }),
+    create("UIListLayout", {
+        Padding = UDim.new(0, 2),
+        SortOrder = Enum.SortOrder.LayoutOrder,
+    }),
+    create("UIPadding", {
+        PaddingTop = UDim.new(0, 4),
+        PaddingBottom = UDim.new(0, 4),
+        PaddingLeft = UDim.new(0, 4),
+        PaddingRight = UDim.new(0, 4),
+    }),
+})
+
+local filterMenuOpen = nil
+local filterMenuTween = nil
+local filterDropOpenTween = TweenInfo.new(0.22, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+local filterDropCloseTween = TweenInfo.new(0.18, Enum.EasingStyle.Quint, Enum.EasingDirection.In)
+local filterChevronTweenInfo = TweenInfo.new(0.2, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+
+local function killFilterMenuTween()
+    if filterMenuTween then
+        pcall(function()
+            filterMenuTween:Cancel()
+        end)
+        filterMenuTween = nil
+    end
+end
+
+local function animatedCloseDropdown(onComplete)
+    killFilterMenuTween()
+    if not filterDropList.Visible then
+        filterMenuOpen = nil
+        accessChevron.Rotation = 0
+        categoryChevron.Rotation = 0
+        if onComplete then
+            task.defer(onComplete)
+        end
+        return
+    end
+    local cur = filterDropList.Size
+    filterMenuOpen = nil
+    tween(accessChevron, filterChevronTweenInfo, { Rotation = 0 })
+    tween(categoryChevron, filterChevronTweenInfo, { Rotation = 0 })
+    filterMenuTween = TweenService:Create(filterDropList, filterDropCloseTween, {
+        Size = UDim2.new(cur.X.Scale, cur.X.Offset, 0, 0),
+        BackgroundTransparency = 1,
+    })
+    filterMenuTween:Play()
+    filterMenuTween.Completed:Once(function()
+        filterDropList.Visible = false
+        filterMenuTween = nil
+        if onComplete then
+            onComplete()
+        end
+    end)
+end
+
+local function closeCmdFilterMenu(animated)
+    animated = animated ~= false
+    if not animated then
+        killFilterMenuTween()
+        filterMenuOpen = nil
+        filterDropList.Visible = false
+        accessChevron.Rotation = 0
+        categoryChevron.Rotation = 0
+        return
+    end
+    animatedCloseDropdown(nil)
+end
+
+local function syncCmdFilterButtonLabels()
+    local at = "Access · All access"
+    for _, o in ipairs(ACCESS_FILTER_OPTIONS) do
+        if o.key == cmdFilterAccess then
+            at = "Access · " .. o.label
+            break
+        end
+    end
+    local ct = "Type · All types"
+    for _, o in ipairs(CATEGORY_FILTER_OPTIONS) do
+        if o.key == cmdFilterCategory then
+            ct = "Type · " .. o.label
+            break
+        end
+    end
+    accessLabel.Text = at
+    categoryLabel.Text = ct
+end
+
+local function openCmdFilterMenu(kind, options, setter)
+    if filterMenuOpen == kind then
+        closeCmdFilterMenu(true)
+        return
+    end
+
+    local function doPopulateAndOpen()
+        for _, ch in ipairs(filterDropList:GetChildren()) do
+            if ch:IsA("TextButton") then
+                ch:Destroy()
+            end
+        end
+        local order = 0
+        for _, opt in ipairs(options) do
+            order = order + 1
+            local row = create("TextButton", {
+                Name = "Opt_" .. tostring(opt.key),
+                Size = UDim2.new(1, 0, 0, 22),
+                BackgroundColor3 = Theme.SurfaceHover,
+                BackgroundTransparency = 0.35,
+                BorderSizePixel = 0,
+                AutoButtonColor = false,
+                Text = opt.label,
+                TextSize = 11,
+                Font = Theme.Font,
+                TextColor3 = Theme.Text,
+                LayoutOrder = order,
+                Parent = filterDropList,
+            }, {
+                create("UICorner", { CornerRadius = UDim.new(0, 4) }),
+            })
+            row.MouseButton1Click:Connect(function()
+                playClickSound()
+                setter(opt.key)
+                closeCmdFilterMenu(true)
+                syncCmdFilterButtonLabels()
+                populateSuggestions(CommandInput.Text or "")
+            end)
+        end
+
+        local pos, wScale, wOff, targetH
+        if kind == "access" then
+            pos = UDim2.new(0, 8, 0, 84)
+            wScale = 0.46
+            wOff = -4
+        else
+            pos = UDim2.new(0.52, 4, 0, 84)
+            wScale = 0.46
+            wOff = -8
+        end
+        targetH = math.min(200, #options * 24 + 14)
+
+        filterMenuOpen = kind
+        filterDropList.Position = pos
+        filterDropList.Size = UDim2.new(wScale, wOff, 0, 0)
+        filterDropList.BackgroundTransparency = 1
+        filterDropList.Visible = true
+
+        killFilterMenuTween()
+        tween(accessChevron, filterChevronTweenInfo, { Rotation = kind == "access" and 180 or 0 })
+        tween(categoryChevron, filterChevronTweenInfo, { Rotation = kind == "category" and 180 or 0 })
+
+        filterMenuTween = TweenService:Create(filterDropList, filterDropOpenTween, {
+            Size = UDim2.new(wScale, wOff, 0, targetH),
+            BackgroundTransparency = 0.05,
+        })
+        filterMenuTween:Play()
+        filterMenuTween.Completed:Once(function()
+            filterMenuTween = nil
+        end)
+    end
+
+    if filterDropList.Visible or filterMenuOpen ~= nil then
+        animatedCloseDropdown(doPopulateAndOpen)
+    else
+        doPopulateAndOpen()
+    end
+end
+
+accessFilterBtn.MouseButton1Click:Connect(function()
+    playClickSound()
+    openCmdFilterMenu("access", ACCESS_FILTER_OPTIONS, function(k)
+        cmdFilterAccess = k
+    end)
+end)
+
+categoryFilterBtn.MouseButton1Click:Connect(function()
+    playClickSound()
+    openCmdFilterMenu("category", CATEGORY_FILTER_OPTIONS, function(k)
+        cmdFilterCategory = k
+    end)
+end)
+
+accessFilterBtn.MouseEnter:Connect(function()
+    tween(accessShell, quickTween, { BackgroundTransparency = 0.05 })
+end)
+accessFilterBtn.MouseLeave:Connect(function()
+    tween(accessShell, quickTween, { BackgroundTransparency = 0.15 })
+end)
+categoryFilterBtn.MouseEnter:Connect(function()
+    tween(categoryShell, quickTween, { BackgroundTransparency = 0.05 })
+end)
+categoryFilterBtn.MouseLeave:Connect(function()
+    tween(categoryShell, quickTween, { BackgroundTransparency = 0.15 })
+end)
+
+syncCmdFilterButtonLabels()
 
 openUI = function()
     if isOpen then return end
@@ -8782,6 +9702,7 @@ openUI = function()
 end
 
 closeUI = function()
+    closeCmdFilterMenu(false)
     if not isOpen then return end
     isOpen = false
 
@@ -8901,7 +9822,7 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
         if not (hotkeyAlwaysActive["clickfling"] or clickFlingPanel.IsOpen() or clickFlingState.enabled) then return end
         if not clickFlingState.enabled then return end
         if flingInProgress then return end
-        local target = (targetingState.silent and camlockState.enabled and camlockState.target) or getClosestPlayerToMouse()
+        local target = (targetingState.silent and camlockState.armed and camlockState.target) or getClosestPlayerToMouse()
         if not target then
             notify("No player near cursor to fling", "warning", 2)
             return
@@ -8913,32 +9834,18 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
             end
         end)
     elseif input.KeyCode == camlockState.hotkey then
-        if not (hotkeyAlwaysActive["camlock"] or camlockState.enabled) then return end
-        if camlockState.enabled then
+        if not (hotkeyAlwaysActive["camlock"] or aimbotPanel.IsOpen() or camlockState.armed) then return end
+        if camlockState.armed then
             stopCamlock()
-            notify("Camlock disabled", "info", 2)
+            notify("Aimbot disarmed", "info", 2)
         else
-            -- Lock onto nearest player
-            local myChar = LocalPlayer.Character
-            local myHrp = myChar and myChar:FindFirstChild("HumanoidRootPart")
-            if myHrp then
-                local best, bestDist = nil, math.huge
-                for _, p in ipairs(Players:GetPlayers()) do
-                    if p ~= LocalPlayer and p.Character then
-                        local thrp = p.Character:FindFirstChild("HumanoidRootPart")
-                        if thrp then
-                            local d = (thrp.Position - myHrp.Position).Magnitude
-                            if d < bestDist then best, bestDist = p, d end
-                        end
-                    end
+            local best = pickNearestCamlockTarget()
+            if best then
+                if startCamlock(best) then
+                    notify("Aimbot armed · " .. best.DisplayName .. " · hold aim bind to aim", "success", 2)
                 end
-                if best then
-                    if startCamlock(best) then
-                        notify("Camlock -> " .. best.DisplayName, "success", 2)
-                    end
-                else
-                    notify("No players to lock onto", "warning", 2)
-                end
+            else
+                notify("No players to lock onto", "warning", 2)
             end
         end
     elseif input.KeyCode == smoothFlyState.hotkey then
