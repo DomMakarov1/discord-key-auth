@@ -9236,6 +9236,42 @@ local function postJson(url, bodyTable)
     return parsed, nil
 end
 
+--- Auth POST that returns `error` body `code` on 401 (ACCESS_BANNED, LOGIN_LOCKOUT, etc.)
+local function postJsonAuth(url, bodyTable)
+    local req = getRequestFn()
+    if not req then
+        return nil, "No supported HTTP request function in executor", nil, nil
+    end
+    local ok, res = pcall(function()
+        return req({
+            Url = url,
+            Method = "POST",
+            Headers = { ["Content-Type"] = "application/json" },
+            Body = HttpService:JSONEncode(bodyTable),
+        })
+    end)
+    if not ok or not res then
+        return nil, "HTTP request failed", nil, nil
+    end
+    local body = tostring(res.Body or "")
+    local parsed = nil
+    pcall(function()
+        parsed = HttpService:JSONDecode(body)
+    end)
+    if tonumber(res.StatusCode) ~= 200 then
+        local msg = "Auth failed"
+        if type(parsed) == "table" and parsed.error then
+            msg = tostring(parsed.error)
+        end
+        local code = (type(parsed) == "table" and parsed.code) and tostring(parsed.code) or nil
+        return nil, msg, code, parsed
+    end
+    if type(parsed) ~= "table" or parsed.ok ~= true then
+        return nil, "Invalid auth response", nil, parsed
+    end
+    return parsed, nil, nil, parsed
+end
+
 -- Bearer JSON request (POST with body or GET without) for /client/presence and /client/commands
 local function authHttpJson(method, url, token, bodyTable)
     local req = getRequestFn()
@@ -9481,10 +9517,14 @@ local function refreshAuthTokenViaSavedKey()
     if type(persistedConfig.loginKey) ~= "string" or persistedConfig.loginKey == "" then
         return false
     end
-    local data, err = postJson(AUTH_API_BASE .. "/auth/script-login-key", {
+    local data, err, banCode = postJsonAuth(AUTH_API_BASE .. "/auth/script-login-key", {
         username = persistedConfig.loginUser,
         key = persistedConfig.loginKey,
+        hwid = getClientHwid(),
     })
+    if banCode == "ACCESS_BANNED" or banCode == "LOGIN_LOCKOUT" then
+        return false
+    end
     if data and data.ok == true and type(data.token) == "string" and data.token ~= "" then
         persistedConfig.authToken = data.token
         if data.tier then
@@ -9523,6 +9563,19 @@ local function getClientHwid()
         end
     end
     return nil
+end
+
+local function fetchScriptAccessStatus()
+    local data, _err = postJson(AUTH_API_BASE .. "/auth/access-status", {
+        hwid = getClientHwid(),
+    })
+    if type(data) ~= "table" or data.ok ~= true then
+        return { canLogin = true }
+    end
+    if data.canLogin == false then
+        return data
+    end
+    return { canLogin = true }
 end
 
 local function ackRemoteCommand(tok, cmdId, okAck, errText)
@@ -9657,17 +9710,15 @@ local function startRemoteAdminBridge()
 end
 
 local function scriptAuthLogin(username, password)
-    local data, err = postJson(AUTH_API_BASE .. "/auth/script-login", {
+    local data, err, code = postJsonAuth(AUTH_API_BASE .. "/auth/script-login", {
         username = username,
         password = password,
+        hwid = getClientHwid(),
     })
     if not data then
-        return false, err or "Auth failed"
+        return false, err or "Auth failed", code
     end
-    if data.ok ~= true then
-        return false, tostring(data.error or "Auth rejected")
-    end
-    return true, data
+    return true, data, nil
 end
 
 -- Separate function so showLoginScreen does not exceed Luau local register limits.
@@ -10033,6 +10084,7 @@ local function loginBuildErrAndSubmit(L)
     el.TextSize = 11
     el.Font = Theme.Font
     el.TextXAlignment = Enum.TextXAlignment.Left
+    el.TextWrapped = true
     el.Parent = L.card
     L.errLabel = el
 
@@ -10129,11 +10181,51 @@ local function loginBuildDiscordUnloadFooter(L)
     foot.Parent = L.card
 end
 
+local function loginApplyHardwareBlock(L, message, code)
+    if not L then
+        return
+    end
+    L.accessBlocked = true
+    L.submitted = false
+    local msg = tostring(message or "Access denied")
+    if code == "ACCESS_BANNED" and DISCORD_INVITE ~= "" then
+        msg = msg .. "\n\nAppeal in Discord: " .. DISCORD_INVITE
+    end
+    L.errLabel.TextWrapped = true
+    L.errLabel.Position = UDim2.new(0, 32, 0, 190)
+    L.errLabel.Size = UDim2.new(1, -64, 0, 76)
+    L.errLabel.Text = msg
+    L.errLabel.TextColor3 = Theme.Error
+    L.userBox.TextEditable = false
+    L.passBox.TextEditable = false
+    L.userBox.BackgroundColor3 = Color3.fromRGB(40, 40, 48)
+    L.passBox.BackgroundColor3 = Color3.fromRGB(40, 40, 48)
+    L.userBox.TextTransparency = 0.4
+    L.passBox.TextTransparency = 0.4
+    L.submitBtn.Text = "BLOCKED"
+    L.submitBtn.Position = UDim2.new(0, 32, 0, 276)
+    L.submitBtn.AutoButtonColor = false
+    pcall(function()
+        L.submitBtn.Active = false
+    end)
+    tween(L.submitBtn, quickTween, { BackgroundTransparency = 0.55 })
+    if L.discordBtn then
+        L.discordBtn.Position = UDim2.new(0, 32, 0, 326)
+    end
+    if L.unloadBtn then
+        L.unloadBtn.Position = UDim2.new(0.5, 4, 0, 326)
+    end
+end
+
 local function loginRunAuthRequest(L, onSuccess, user, pass)
-    local okAuth, authResult = scriptAuthLogin(user, pass)
+    local okAuth, authResult, authCode = scriptAuthLogin(user, pass)
     if not okAuth then
         L.submitted = false
         clearSavedLogin()
+        if authCode == "ACCESS_BANNED" or authCode == "LOGIN_LOCKOUT" then
+            loginApplyHardwareBlock(L, authResult, authCode)
+            return
+        end
         L.submitBtn.Text = "LOGIN"
         L.userBox.TextEditable = true
         L.passBox.TextEditable = true
@@ -10176,6 +10268,9 @@ local function loginRunAuthRequest(L, onSuccess, user, pass)
 end
 
 local function loginAttemptAuth(L, onSuccess)
+    if L.accessBlocked then
+        return
+    end
     if L.submitted then return end
     local user = L.userBox.Text
     local pass = L.passRealText
@@ -10266,13 +10361,19 @@ local function showLoginScreen(onSuccess)
     TopBar.Visible = false
     MainFrame.Visible = false
     Backdrop.Visible = false
-    local L = { passRealText = "", submitted = false }
+    local L = { passRealText = "", submitted = false, accessBlocked = false }
     loginBuildBackdropAndCard(L)
     loginBuildUserPassFields(L)
     loginInstallPasswordMask(L)
     loginBuildErrAndSubmit(L)
     loginBuildDiscordUnloadFooter(L)
     loginWireEvents(L, onSuccess)
+    task.defer(function()
+        local st = fetchScriptAccessStatus()
+        if type(st) == "table" and st.canLogin == false then
+            loginApplyHardwareBlock(L, st.message, st.code)
+        end
+    end)
 end
 
 local function revealMainUI(username)
@@ -10440,10 +10541,16 @@ local function _uaRunLoginFlow()
         and type(persistedConfig.loginKey) == "string" and #persistedConfig.loginKey > 0 then
         local okSaved = false
         pcall(function()
-            local data, err = postJson(AUTH_API_BASE .. "/auth/script-login-key", {
+            local data, err, banCode = postJsonAuth(AUTH_API_BASE .. "/auth/script-login-key", {
                 username = persistedConfig.loginUser,
                 key = persistedConfig.loginKey,
+                hwid = getClientHwid(),
             })
+            if banCode == "ACCESS_BANNED" or banCode == "LOGIN_LOCKOUT" then
+                clearSavedLogin()
+                okSaved = false
+                return
+            end
             if data and data.ok == true then
                 if data.tier then
                     persistedConfig.accountTier = data.tier
