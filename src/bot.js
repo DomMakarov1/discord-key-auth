@@ -313,15 +313,15 @@ async function replyPagedEmbed(interaction, title, items, page, formatter) {
 
 export async function startBot() {
   const rest = new REST({ version: "10" }).setToken(config.discordToken);
-  await rest.put(
-    Routes.applicationCommands(config.discordClientId),
-    { body: commands }
-  );
-  await rest.put(
-    Routes.applicationGuildCommands(config.discordClientId, config.discordGuildId),
-    { body: commands }
-  );
-  console.log("Registered slash commands globally (DM) and for guild (instant updates).");
+  // Register once globally only. Registering the same commands globally AND on a guild
+  // makes every slash appear twice for members in that server.
+  if (config.discordGuildId) {
+    await rest.put(Routes.applicationGuildCommands(config.discordClientId, config.discordGuildId), {
+      body: [],
+    });
+  }
+  await rest.put(Routes.applicationCommands(config.discordClientId), { body: commands });
+  console.log("Registered slash commands globally (guild + DMs; updates may take up to ~1h to propagate).");
 
   const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 

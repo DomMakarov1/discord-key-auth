@@ -10019,6 +10019,15 @@ local function loginDiscordClicked(L)
     else
         L.errLabel.Text = "Set getgenv().UA_DiscordInvite = \"https://discord.gg/...\" before running"
     end
+    if L.accessBlocked and type(L.accessBlockBannerText) == "string" and L.accessBlockBannerText ~= "" then
+        task.delay(2, function()
+            if L.errLabel and L.errLabel.Parent then
+                L.errLabel.TextColor3 = Theme.Error
+                L.errLabel.Text = L.accessBlockBannerText
+            end
+        end)
+        return
+    end
     task.delay(3, function()
         if L.errLabel and L.errLabel.Parent then
             L.errLabel.Text = ""
@@ -10129,6 +10138,7 @@ local function loginBuildDiscordUnloadFooter(L)
     hint.Font = Theme.Font
     hint.TextXAlignment = Enum.TextXAlignment.Left
     hint.Parent = L.card
+    L.joinHint = hint
 
     local db = Instance.new("TextButton")
     db.Position = UDim2.new(0, 32, 0, 300)
@@ -10190,6 +10200,10 @@ local function loginApplyHardwareBlock(L, message, code)
     local msg = tostring(message or "Access denied")
     if code == "ACCESS_BANNED" and DISCORD_INVITE ~= "" then
         msg = msg .. "\n\nAppeal in Discord: " .. DISCORD_INVITE
+    end
+    L.accessBlockBannerText = msg
+    if L.joinHint then
+        L.joinHint.Visible = false
     end
     L.errLabel.TextWrapped = true
     L.errLabel.Position = UDim2.new(0, 32, 0, 190)
