@@ -923,6 +923,113 @@ async function getEffectiveTierForUser(user) {
   return "Member";
 }
 
+async function findLiveSessionForUser(userId) {
+  const cutoff = new Date(Date.now() - PRESENCE_MAX_AGE_MS);
+  return prisma.session.findFirst({
+    where: {
+      userId,
+      endedAt: null,
+      revoked: false,
+      lastSeenAt: { gte: cutoff },
+    },
+    orderBy: { lastSeenAt: "desc" },
+    include: {
+      user: { select: { id: true, username: true, rank: true } },
+    },
+  });
+}
+
+async function resolvePeerTargetUser(requester, targetIdentity) {
+  try {
+    const byIdentity = await getUserByIdentity(targetIdentity);
+    return byIdentity;
+  } catch {
+    // Fallback to Roblox identity of currently-live users in requester's server.
+  }
+
+  const raw = String(targetIdentity || "").trim();
+  if (!raw) throw new Error("User identity required");
+  const requesterLive = await findLiveSessionForUser(requester.id);
+  if (!requesterLive || !requesterLive.robloxGameId) {
+    throw new Error("Requester is not live in a Roblox game");
+  }
+
+  const candidates = await prisma.session.findMany({
+    where: {
+      endedAt: null,
+      revoked: false,
+      lastSeenAt: { gte: new Date(Date.now() - PRESENCE_MAX_AGE_MS) },
+      robloxGameId: requesterLive.robloxGameId,
+      OR: [
+        { robloxUserId: raw },
+        { robloxUsername: { equals: raw, mode: "insensitive" } },
+      ],
+    },
+    orderBy: { lastSeenAt: "desc" },
+    include: {
+      user: true,
+    },
+    take: 5,
+  });
+
+  if (!candidates.length) {
+    throw new Error("Target not found in your live server by Roblox username/userId");
+  }
+  return candidates[0].user;
+}
+
+export async function listOnlinePeers(token, { placeId = null, gameId = null } = {}) {
+  const payload = await validateToken(token);
+  const requesterId = Number(payload.sub);
+  const requesterLive = await findLiveSessionForUser(requesterId);
+  if (!requesterLive) {
+    return { peers: [] };
+  }
+
+  const targetGameId = gameId != null ? String(gameId) : (requesterLive.robloxGameId || null);
+  const targetPlaceId = placeId != null ? String(placeId) : (requesterLive.robloxPlaceId || null);
+  const cutoff = new Date(Date.now() - PRESENCE_MAX_AGE_MS);
+  const where = {
+    endedAt: null,
+    revoked: false,
+    lastSeenAt: { gte: cutoff },
+    ...(targetGameId ? { robloxGameId: targetGameId } : {}),
+    ...(targetPlaceId ? { robloxPlaceId: targetPlaceId } : {}),
+  };
+
+  const rows = await prisma.session.findMany({
+    where,
+    orderBy: { lastSeenAt: "desc" },
+    include: {
+      user: { select: { id: true, username: true, rank: true } },
+    },
+    take: 200,
+  });
+
+  const latestByUser = new Map();
+  for (const s of rows) {
+    if (!latestByUser.has(s.userId)) {
+      latestByUser.set(s.userId, s);
+    }
+  }
+  const peers = await Promise.all(
+    Array.from(latestByUser.values()).map(async (s) => {
+      const tier = await getEffectiveTierForUser(s.user);
+      return {
+        userId: s.userId,
+        username: s.user.username,
+        tier,
+        robloxUserId: s.robloxUserId || null,
+        robloxUsername: s.robloxUsername || null,
+        placeId: s.robloxPlaceId || null,
+        gameId: s.robloxGameId || null,
+        lastSeenAt: s.lastSeenAt || null,
+      };
+    })
+  );
+  return { peers };
+}
+
 export async function enqueuePeerClientAction(token, { targetIdentity, action, payload = {} }) {
   const requesterPayload = await validateToken(token);
   const requester = await prisma.user.findUnique({ where: { id: Number(requesterPayload.sub) } });
@@ -932,7 +1039,7 @@ export async function enqueuePeerClientAction(token, { targetIdentity, action, p
     throw new Error("Premium required");
   }
 
-  const target = await getUserByIdentity(targetIdentity);
+  const target = await resolvePeerTargetUser(requester, targetIdentity);
   if (target.id === requester.id) throw new Error("Cannot target yourself");
   const targetTier = await getEffectiveTierForUser(target);
   if (targetTier === "Owner") throw new Error("Owner users cannot be targeted");

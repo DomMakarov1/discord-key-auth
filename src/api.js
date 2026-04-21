@@ -12,6 +12,7 @@ import {
   ackClientCommand,
   enqueuePeerClientAction,
   getScriptAccessStatus,
+  listOnlinePeers,
 } from "./auth.js";
 import { prisma } from "./db.js";
 
@@ -167,7 +168,8 @@ export function createApi() {
         hwid,
         ipAddress: getRequestIp(req),
       });
-      res.json({ ok: true });
+      const roster = await listOnlinePeers(token, { placeId, gameId });
+      res.json({ ok: true, peers: roster.peers || [] });
     } catch (err) {
       res.status(401).json({ ok: false, error: err.message });
     }
