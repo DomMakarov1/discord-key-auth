@@ -3935,29 +3935,21 @@ Commands["ploopfling"].Execute = function(args)
     local resolved = resolvePlayerList(args[1], { excludeSelf = true })
     if #resolved == 0 then error("No players found: " .. tostring(args[1])) end
     local duration = math.clamp(tonumber(args[2]) or 4, 1, 12)
-    local out = sendPeerActionForPlayer(resolved[1], "ua_loopfling", {
+    local out = peerOps.sendPeerActionForPlayer(resolved[1], "ua_loopfling", {
         durationSec = duration,
         power = 300,
     })
     notify("Loop-fling request queued for " .. out.targetUsername, "success", 2.5)
 end
 
-local localFreezeUntil = 0
-local localFreezeConn = nil
-local localPeerLoopFlingUntil = 0
-local localPeerLoopFlingConn = nil
+peerOps = { freezeUntil = 0, freezeConn = nil, loopUntil = 0, loopConn = nil }
 
-local function startLocalFreeze(seconds)
-    localFreezeUntil = os.clock() + math.max(1, tonumber(seconds) or 6)
-    if localFreezeConn then
-        return
-    end
-    localFreezeConn = RunService.Heartbeat:Connect(function()
-        if os.clock() >= localFreezeUntil then
-            if localFreezeConn then
-                localFreezeConn:Disconnect()
-                localFreezeConn = nil
-            end
+peerOps.startLocalFreeze = function(seconds)
+    peerOps.freezeUntil = os.clock() + math.max(1, tonumber(seconds) or 6)
+    if peerOps.freezeConn then return end
+    peerOps.freezeConn = RunService.Heartbeat:Connect(function()
+        if os.clock() >= peerOps.freezeUntil then
+            if peerOps.freezeConn then peerOps.freezeConn:Disconnect() peerOps.freezeConn = nil end
             return
         end
         local char = LocalPlayer.Character
@@ -3982,12 +3974,10 @@ local function startLocalFreeze(seconds)
     end)
 end
 
-local function runLocalVelocityFling(power)
+peerOps.runLocalVelocityFling = function(power)
     local char = LocalPlayer.Character
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
-    if not hrp then
-        error("missing character for fling")
-    end
+    if not hrp then error("missing character for fling") end
     local p = math.clamp(tonumber(power) or 260, 120, 1200)
     local dir = Vector3.new(math.random() - 0.5, 0, math.random() - 0.5)
     if dir.Magnitude < 0.01 then dir = Vector3.new(1, 0, 0) end
@@ -3998,55 +3988,37 @@ local function runLocalVelocityFling(power)
     end)
 end
 
-local function startLocalPeerLoopFling(durationSec, power)
-    localPeerLoopFlingUntil = os.clock() + math.clamp(tonumber(durationSec) or 4, 1, 12)
+peerOps.startLocalPeerLoopFling = function(durationSec, power)
+    peerOps.loopUntil = os.clock() + math.clamp(tonumber(durationSec) or 4, 1, 12)
     local p = math.clamp(tonumber(power) or 280, 140, 1200)
-    if localPeerLoopFlingConn then
-        return
-    end
-    localPeerLoopFlingConn = RunService.Heartbeat:Connect(function()
-        if os.clock() >= localPeerLoopFlingUntil then
-            if localPeerLoopFlingConn then
-                localPeerLoopFlingConn:Disconnect()
-                localPeerLoopFlingConn = nil
-            end
+    if peerOps.loopConn then return end
+    peerOps.loopConn = RunService.Heartbeat:Connect(function()
+        if os.clock() >= peerOps.loopUntil then
+            if peerOps.loopConn then peerOps.loopConn:Disconnect() peerOps.loopConn = nil end
             return
         end
-        local ok = pcall(function()
-            runLocalVelocityFling(p)
-        end)
-        if not ok and localPeerLoopFlingConn then
-            localPeerLoopFlingConn:Disconnect()
-            localPeerLoopFlingConn = nil
+        local ok = pcall(function() peerOps.runLocalVelocityFling(p) end)
+        if not ok and peerOps.loopConn then
+            peerOps.loopConn:Disconnect()
+            peerOps.loopConn = nil
         end
     end)
 end
 
-local function sendPeerActionRequest(targetIdentity, action, payload)
+peerOps.sendPeerActionForPlayer = function(targetPlayer, action, payload)
     if type(requestPeerActionFn) ~= "function" then
         error("Peer actions are unavailable before login")
     end
-    local data, err = requestPeerActionFn(targetIdentity, action, payload or {})
-    if err or not data or data.ok ~= true then
-        error(tostring((data and data.error) or err or "Peer action failed"))
-    end
-    return data
-end
-
-local function sendPeerActionForPlayer(targetPlayer, action, payload)
-    local attempts = { tostring(targetPlayer.UserId), targetPlayer.Name }
-    local lastErr
+    local attempts, lastErr = { tostring(targetPlayer.UserId), targetPlayer.Name }, nil
     for _, identity in ipairs(attempts) do
         local ok, out = pcall(function()
-            return sendPeerActionRequest(identity, action, payload)
+            return requestPeerActionFn(identity, action, payload or {})
         end)
-        if ok and out then
+        if ok and out and out.ok == true and not out.error then
             return out
         end
-        lastErr = tostring(out)
-        if not lastErr:find("HTTP 400", 1, true) then
-            break
-        end
+        lastErr = tostring((out and out.error) or out or "Peer action failed")
+        if not tostring(lastErr):find("HTTP 400", 1, true) then break end
     end
     error(lastErr or "Peer action failed")
 end
@@ -4055,7 +4027,7 @@ Commands["pbring"].Execute = function(args)
     if not args or not args[1] then error("Usage: ;pbring <player>") end
     local target = resolvePlayerList(args[1], { excludeSelf = true })
     if #target == 0 then error("Player not found: " .. tostring(args[1])) end
-    local out = sendPeerActionForPlayer(target[1], "ua_bring", {
+    local out = peerOps.sendPeerActionForPlayer(target[1], "ua_bring", {
         destinationUserId = tostring(LocalPlayer.UserId),
         destinationUsername = LocalPlayer.Name,
     })
@@ -4066,7 +4038,7 @@ Commands["pfreeze"].Execute = function(args)
     if not args or not args[1] then error("Usage: ;pfreeze <player>") end
     local target = resolvePlayerList(args[1], { excludeSelf = true })
     if #target == 0 then error("Player not found: " .. tostring(args[1])) end
-    local out = sendPeerActionForPlayer(target[1], "ua_freeze", {
+    local out = peerOps.sendPeerActionForPlayer(target[1], "ua_freeze", {
         durationSec = 6,
     })
     notify("Freeze request queued for " .. out.targetUsername, "success", 3)
@@ -4077,7 +4049,7 @@ Commands["pfling"].Execute = function(args)
     local target = resolvePlayerList(args[1], { excludeSelf = true })
     if #target == 0 then error("Player not found: " .. tostring(args[1])) end
     local power = math.clamp(tonumber(args[2]) or 280, 120, 1200)
-    local out = sendPeerActionForPlayer(target[1], "ua_fling", { power = power })
+    local out = peerOps.sendPeerActionForPlayer(target[1], "ua_fling", { power = power })
     notify("Fling request queued for " .. out.targetUsername, "success", 3)
 end
 
@@ -4085,7 +4057,7 @@ Commands["pkill"].Execute = function(args)
     if not args or not args[1] then error("Usage: ;pkill <player>") end
     local target = resolvePlayerList(args[1], { excludeSelf = true })
     if #target == 0 then error("Player not found: " .. tostring(args[1])) end
-    local out = sendPeerActionForPlayer(target[1], "ua_kill", {})
+    local out = peerOps.sendPeerActionForPlayer(target[1], "ua_kill", {})
     notify("Kill request queued for " .. out.targetUsername, "success", 3)
 end
 
@@ -10635,17 +10607,17 @@ local function remoteAdminBridgeTick(tok)
             elseif cmd.action == "ua_freeze" and type(cmd.payload) == "table" then
                 local okFreeze, freezeErr = pcall(function()
                     local sec = tonumber(cmd.payload.durationSec) or 6
-                    startLocalFreeze(sec)
+                    peerOps.startLocalFreeze(sec)
                 end)
                 ackRemoteCommand(tok, cmdId, okFreeze, okFreeze and nil or freezeErr)
             elseif cmd.action == "ua_fling" and type(cmd.payload) == "table" then
                 local okFling, flingErr = pcall(function()
-                    runLocalVelocityFling(tonumber(cmd.payload.power) or 280)
+                    peerOps.runLocalVelocityFling(tonumber(cmd.payload.power) or 280)
                 end)
                 ackRemoteCommand(tok, cmdId, okFling, okFling and nil or flingErr)
             elseif cmd.action == "ua_loopfling" and type(cmd.payload) == "table" then
                 local okLoop, loopErr = pcall(function()
-                    startLocalPeerLoopFling(tonumber(cmd.payload.durationSec) or 4, tonumber(cmd.payload.power) or 300)
+                    peerOps.startLocalPeerLoopFling(tonumber(cmd.payload.durationSec) or 4, tonumber(cmd.payload.power) or 300)
                 end)
                 ackRemoteCommand(tok, cmdId, okLoop, okLoop and nil or loopErr)
             elseif cmd.action == "ua_kill" then
