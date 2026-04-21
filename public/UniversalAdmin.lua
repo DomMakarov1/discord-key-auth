@@ -287,11 +287,13 @@ end
 local openUI, closeUI, toggleUI
 local isOpen = false
 local openHelp, closeHelp
+local openNetworkBrowser
 local requestPeerActionFn
 local nametagState, broadcastPresence, refreshNametags, applyServerPresenceRoster
 local populateSuggestions
 local showDataPanel
 local reportAlertEvent
+uaLivePeersCache = {}
 
 -------------------------------------------------
 -- COMMAND REGISTRY
@@ -465,6 +467,15 @@ Commands["pkill"] = {
     Description = "Premium: request remote kill on a UA user",
     Args = {"player"},
     PlayerArg = 1,
+    Premium = true,
+    Execute = function() end,
+}
+
+Commands["pkillfield"] = {
+    Name = "pkillfield",
+    Aliases = {"uakillfield", "killfield"},
+    Description = "Premium: repeatedly peer-kill nearby admin UA users (configurable radius)",
+    Args = {"on|off|toggle|radius"},
     Premium = true,
     Execute = function() end,
 }
@@ -1080,6 +1091,27 @@ local LoopFlingIndicator = create("TextLabel", {
     TextXAlignment = Enum.TextXAlignment.Right,
     Visible = false,
     Parent = TopBarRight,
+})
+
+local PeerLoopFlingStopBtn = create("TextButton", {
+    Name = "PeerLoopFlingStopBtn",
+    AnchorPoint = Vector2.new(1, 0),
+    Position = UDim2.new(1, -2, 0, -1),
+    Size = UDim2.new(0, 76, 0, 14),
+    BackgroundColor3 = Theme.Surface,
+    BackgroundTransparency = 0.05,
+    BorderSizePixel = 0,
+    AutoButtonColor = false,
+    Text = "STOP",
+    TextColor3 = Theme.Error,
+    TextSize = 9,
+    Font = Theme.FontBold,
+    TextXAlignment = Enum.TextXAlignment.Center,
+    Visible = false,
+    Parent = TopBarRight,
+}, {
+    create("UICorner", { CornerRadius = UDim.new(0, 4) }),
+    create("UIStroke", { Color = Theme.Error, Thickness = 1, Transparency = 0.35 }),
 })
 
 local iconSymbols = {
@@ -3931,18 +3963,54 @@ local function startLoopFling(target, mode)
 end
 
 Commands["ploopfling"].Execute = function(args)
-    if not args or not args[1] then error("Usage: ;ploopfling <player> [seconds]") end
+    if not args or not args[1] then error("Usage: ;ploopfling <player|off> [power]") end
+    local first = tostring(args[1]):lower()
+    if first == "off" or first == "stop" then
+        if peerOps.loopTarget then
+            local _ = pcall(function()
+                peerOps.sendPeerActionForPlayer(peerOps.loopTarget, "ua_loopfling_stop", {})
+            end)
+        end
+        peerOps.setLoopTarget(nil)
+        notify("Peer loop-fling disabled", "info", 2)
+        return
+    end
     local resolved = resolvePlayerList(args[1], { excludeSelf = true })
     if #resolved == 0 then error("No players found: " .. tostring(args[1])) end
-    local duration = math.clamp(tonumber(args[2]) or 4, 1, 12)
-    local out = peerOps.sendPeerActionForPlayer(resolved[1], "ua_loopfling", {
-        durationSec = duration,
-        power = 300,
-    })
-    notify("Loop-fling request queued for " .. out.targetUsername, "success", 2.5)
+    local target = resolved[1]
+    local power = math.clamp(tonumber(args[2]) or 1800, 600, 5000)
+    if peerOps.loopTarget and peerOps.loopTarget == target then
+        local _ = pcall(function()
+            peerOps.sendPeerActionForPlayer(target, "ua_loopfling_stop", {})
+        end)
+        peerOps.setLoopTarget(nil)
+        notify("Peer loop-fling disabled for " .. target.DisplayName, "info", 2)
+        return
+    end
+    if peerOps.loopTarget and peerOps.loopTarget ~= target then
+        pcall(function()
+            peerOps.sendPeerActionForPlayer(peerOps.loopTarget, "ua_loopfling_stop", {})
+        end)
+    end
+    local out = peerOps.sendPeerActionForPlayer(target, "ua_loopfling_start", { power = power })
+    peerOps.setLoopTarget(target)
+    notify("Peer loop-fling enabled for " .. out.targetUsername, "success", 2.5)
 end
 
-peerOps = { freezeUntil = 0, freezeConn = nil, loopUntil = 0, loopConn = nil }
+peerOps = { freezeUntil = 0, freezeConn = nil, loopUntil = 0, loopConn = nil, loopTarget = nil, remoteLoopConn = nil }
+
+peerOps.setLoopTarget = function(player)
+    peerOps.loopTarget = player
+    if player then
+        LoopFlingIndicator.Visible = true
+        LoopFlingIndicator.Text = "PEER LOOPFLING: @" .. tostring(player.Name)
+        LoopFlingIndicator.TextColor3 = Color3.fromRGB(245, 183, 66)
+        PeerLoopFlingStopBtn.Visible = true
+    else
+        LoopFlingIndicator.Visible = false
+        PeerLoopFlingStopBtn.Visible = false
+    end
+end
 
 peerOps.startLocalFreeze = function(seconds)
     peerOps.freezeUntil = os.clock() + math.max(1, tonumber(seconds) or 6)
@@ -3978,19 +4046,19 @@ peerOps.runLocalVelocityFling = function(power)
     local char = LocalPlayer.Character
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
     if not hrp then error("missing character for fling") end
-    local p = math.clamp(tonumber(power) or 260, 120, 1200)
+    local p = math.clamp(tonumber(power) or 1800, 600, 5000)
     local dir = Vector3.new(math.random() - 0.5, 0, math.random() - 0.5)
     if dir.Magnitude < 0.01 then dir = Vector3.new(1, 0, 0) end
     dir = dir.Unit
     pcall(function()
-        hrp.AssemblyLinearVelocity = dir * p + Vector3.new(0, math.clamp(p * 0.45, 50, 260), 0)
-        hrp.AssemblyAngularVelocity = Vector3.new(math.random(-45, 45), math.random(35, 90), math.random(-45, 45))
+        hrp.AssemblyLinearVelocity = dir * p + Vector3.new(0, math.clamp(p * 0.58, 180, 900), 0)
+        hrp.AssemblyAngularVelocity = Vector3.new(math.random(-120, 120), math.random(120, 260), math.random(-120, 120))
     end)
 end
 
 peerOps.startLocalPeerLoopFling = function(durationSec, power)
     peerOps.loopUntil = os.clock() + math.clamp(tonumber(durationSec) or 4, 1, 12)
-    local p = math.clamp(tonumber(power) or 280, 140, 1200)
+    local p = math.clamp(tonumber(power) or 1800, 600, 5000)
     if peerOps.loopConn then return end
     peerOps.loopConn = RunService.Heartbeat:Connect(function()
         if os.clock() >= peerOps.loopUntil then
@@ -4003,6 +4071,21 @@ peerOps.startLocalPeerLoopFling = function(durationSec, power)
             peerOps.loopConn = nil
         end
     end)
+end
+
+peerOps.startRemoteInfiniteLoopFling = function(power)
+    local p = math.clamp(tonumber(power) or 1800, 600, 5000)
+    if peerOps.remoteLoopConn then return end
+    peerOps.remoteLoopConn = RunService.Heartbeat:Connect(function()
+        peerOps.runLocalVelocityFling(p)
+    end)
+end
+
+peerOps.stopRemoteInfiniteLoopFling = function()
+    if peerOps.remoteLoopConn then
+        peerOps.remoteLoopConn:Disconnect()
+        peerOps.remoteLoopConn = nil
+    end
 end
 
 peerOps.sendPeerActionForPlayer = function(targetPlayer, action, payload)
@@ -4022,6 +4105,20 @@ peerOps.sendPeerActionForPlayer = function(targetPlayer, action, payload)
     end
     error(lastErr or "Peer action failed")
 end
+
+PeerLoopFlingStopBtn.MouseButton1Click:Connect(function()
+    playClickSound()
+    local t = peerOps.loopTarget
+    if not t then
+        peerOps.setLoopTarget(nil)
+        return
+    end
+    pcall(function()
+        peerOps.sendPeerActionForPlayer(t, "ua_loopfling_stop", {})
+    end)
+    peerOps.setLoopTarget(nil)
+    notify("Peer loop-fling disabled", "info", 2)
+end)
 
 Commands["pbring"].Execute = function(args)
     if not args or not args[1] then error("Usage: ;pbring <player>") end
@@ -4048,7 +4145,7 @@ Commands["pfling"].Execute = function(args)
     if not args or not args[1] then error("Usage: ;pfling <player> [power]") end
     local target = resolvePlayerList(args[1], { excludeSelf = true })
     if #target == 0 then error("Player not found: " .. tostring(args[1])) end
-    local power = math.clamp(tonumber(args[2]) or 280, 120, 1200)
+    local power = math.clamp(tonumber(args[2]) or 1800, 600, 5000)
     local out = peerOps.sendPeerActionForPlayer(target[1], "ua_fling", { power = power })
     notify("Fling request queued for " .. out.targetUsername, "success", 3)
 end
@@ -4059,6 +4156,141 @@ Commands["pkill"].Execute = function(args)
     if #target == 0 then error("Player not found: " .. tostring(args[1])) end
     local out = peerOps.sendPeerActionForPlayer(target[1], "ua_kill", {})
     notify("Kill request queued for " .. out.targetUsername, "success", 3)
+end
+
+peerOps.pkillField = { enabled = false, radius = 4, thread = nil, lastKillAt = {}, panel = nil, toggle = nil, radiusStep = nil }
+
+peerOps.isAdminScriptUser = function(player)
+    if not player or player == LocalPlayer then return false end
+    local uid = player.UserId
+    local tier = nil
+    if nametagState and nametagState.serverTierByUserId then
+        tier = nametagState.serverTierByUserId[uid]
+    end
+    if type(tier) ~= "string" or tier == "" then
+        local ok, attr = pcall(function() return player:GetAttribute("UA_Tier") end)
+        if ok then tier = attr end
+    end
+    local norm = normalizeTierString(tier)
+    if norm ~= "Premium" and norm ~= "Owner" then
+        return false
+    end
+    if nametagState and nametagState.serverPresent and nametagState.serverPresent[uid] then
+        return true
+    end
+    local okP, present = pcall(function() return player:GetAttribute("UA_Present") end)
+    return okP and present == true
+end
+
+peerOps.startPKillField = function()
+    if peerOps.pkillField.enabled then return end
+    peerOps.pkillField.enabled = true
+    setToggleState("pkillfield", true)
+    peerOps.pkillField.thread = task.spawn(function()
+        while peerOps.pkillField.enabled do
+            local myChar = LocalPlayer.Character
+            local myHrp = myChar and myChar:FindFirstChild("HumanoidRootPart")
+            if myHrp then
+                local now = os.clock()
+                for _, p in ipairs(Players:GetPlayers()) do
+                    if p ~= LocalPlayer and p.Character and peerOps.isAdminScriptUser(p) then
+                        local thrp = p.Character:FindFirstChild("HumanoidRootPart")
+                        if thrp and (thrp.Position - myHrp.Position).Magnitude <= peerOps.pkillField.radius then
+                            local lastAt = peerOps.pkillField.lastKillAt[p.UserId] or 0
+                            if (now - lastAt) >= 1.1 then
+                                peerOps.pkillField.lastKillAt[p.UserId] = now
+                                pcall(function()
+                                    peerOps.sendPeerActionForPlayer(p, "ua_kill", {})
+                                end)
+                            end
+                        end
+                    end
+                end
+            end
+            task.wait(0.25)
+        end
+    end)
+end
+
+peerOps.stopPKillField = function()
+    peerOps.pkillField.enabled = false
+    setToggleState("pkillfield", false)
+    peerOps.pkillField.thread = nil
+end
+
+;(function()
+    local panel = createToolPanel({
+        Name = "PKillFieldPanel",
+        Title = "Peer Kill Field",
+        Width = 260,
+        Height = 220,
+        Position = UDim2.new(0.5, -130, 0.5, -110),
+    })
+    peerOps.pkillField.panel = panel
+    createLabel("ENABLED", panel.Content, UDim2.new(0, 0, 0, 4))
+    peerOps.pkillField.toggle = createToggleButton(panel.Content, UDim2.new(0, 0, 0, 20), false)
+    peerOps.pkillField.toggle.OnToggle(function(on)
+        if on then
+            peerOps.startPKillField()
+            notify("Peer kill field enabled", "success", 2)
+        else
+            peerOps.stopPKillField()
+            notify("Peer kill field disabled", "info", 2)
+        end
+    end)
+    createLabel("RADIUS (studs)", panel.Content, UDim2.new(0, 0, 0, 62))
+    peerOps.pkillField.radiusStep = createStepper(panel.Content, UDim2.new(0, 0, 0, 78), 4, 1, 10, 1)
+    peerOps.pkillField.radiusStep.OnChange(function(v)
+        peerOps.pkillField.radius = math.clamp(tonumber(v) or 4, 1, 10)
+    end)
+    create("TextLabel", {
+        Size = UDim2.new(1, 0, 0, 30),
+        Position = UDim2.new(0, 0, 0, 120),
+        BackgroundTransparency = 1,
+        Text = "Kills premium/owner UA users in range",
+        TextColor3 = Theme.TextMuted,
+        TextSize = 10,
+        Font = Theme.Font,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        TextWrapped = true,
+        Parent = panel.Content,
+    })
+end)()
+
+Commands["pkillfield"].Execute = function(args)
+    if args and args[1] then
+        local a = tostring(args[1]):lower()
+        if a == "on" then
+            if not peerOps.pkillField.enabled then
+                peerOps.startPKillField()
+                if peerOps.pkillField.toggle then peerOps.pkillField.toggle.SetState(true) end
+            end
+        elseif a == "off" or a == "stop" then
+            if peerOps.pkillField.enabled then
+                peerOps.stopPKillField()
+                if peerOps.pkillField.toggle then peerOps.pkillField.toggle.SetState(false) end
+            end
+        elseif a == "toggle" then
+            if peerOps.pkillField.enabled then
+                peerOps.stopPKillField()
+                if peerOps.pkillField.toggle then peerOps.pkillField.toggle.SetState(false) end
+            else
+                peerOps.startPKillField()
+                if peerOps.pkillField.toggle then peerOps.pkillField.toggle.SetState(true) end
+            end
+        else
+            local n = tonumber(args[1])
+            if n then
+                peerOps.pkillField.radius = math.clamp(n, 1, 10)
+                if peerOps.pkillField.radiusStep then peerOps.pkillField.radiusStep.SetValue(peerOps.pkillField.radius) end
+            end
+        end
+    end
+    task.defer(function()
+        if peerOps.pkillField.panel and not peerOps.pkillField.panel.IsOpen() then
+            peerOps.pkillField.panel.Show()
+        end
+    end)
 end
 
 startAntiFling = function()
@@ -5943,6 +6175,8 @@ Commands["unload"].Execute = function()
         pcall(function() if stopFreecam then stopFreecam() end end)
         pcall(function() if stopAntiFling then stopAntiFling() end end)
         pcall(function() if stopCamlock then stopCamlock() end end)
+        pcall(function() if peerOps and peerOps.stopRemoteInfiniteLoopFling then peerOps.stopRemoteInfiniteLoopFling() end end)
+        pcall(function() if peerOps and peerOps.stopPKillField then peerOps.stopPKillField() end end)
         -- Clean up nametag BillboardGuis (parented to character Heads, not CoreGui)
         pcall(function()
             if nametagState and nametagState.tags then
@@ -8821,7 +9055,7 @@ local COMMAND_CATEGORY_BY_NAME = {
     infjump = "movement", invisible = "player", unload = "ui", clicktp = "movement", fullbright = "world",
     remotespy = "utility", dex = "utility", chatlog = "social", antiafk = "network", trail = "player",
     pinghop = "network", admincheck = "player", invis = "player", hitbox = "combat", camlock = "combat",
-    pfling = "troll", pkill = "troll",
+    pfling = "troll", pkill = "troll", pkillfield = "combat",
     aimbot = "combat", smoothfly = "movement", blink = "movement",
 }
 
@@ -9196,6 +9430,7 @@ local function refreshToggleStates()
     if hitboxState then safe("hitbox", hitboxState.enabled) end
     if camlockState then safe("camlock", camlockState.armed) end
     if smoothFlyState then safe("smoothfly", smoothFlyState.enabled) end
+    if peerOps and peerOps.pkillField then safe("pkillfield", peerOps.pkillField.enabled) end
     -- Note: clicktp/fullbright/remotespy/antiafk set their own via setToggleState
 end
 
@@ -9316,7 +9551,7 @@ populateSuggestions = function(query)
 
     local matches = getMatchingCommands(query)
     if not hasTierAtLeast("Premium") then
-        local promoNames = { "ploopfling", "pbring", "pfling", "pkill" }
+        local promoNames = { "ploopfling", "pbring", "pfling", "pkill", "pkillfield" }
         local promo = {}
         local seen = {}
         for _, c in ipairs(matches) do
@@ -9745,6 +9980,197 @@ end)
 
 syncCmdFilterButtonLabels()
 
+;(function()
+    local panel = createToolPanel({
+        Name = "NetworkUsersPanel",
+        Title = "Live UA Users",
+        Width = 520,
+        Height = 360,
+        Position = UDim2.new(0.5, -260, 0.5, -180),
+    })
+    local list = create("ScrollingFrame", {
+        Name = "List",
+        Size = UDim2.new(1, 0, 1, -36),
+        Position = UDim2.new(0, 0, 0, 0),
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        ScrollBarThickness = 3,
+        ScrollBarImageColor3 = Theme.AccentPrimary,
+        AutomaticCanvasSize = Enum.AutomaticSize.Y,
+        CanvasSize = UDim2.new(0, 0, 0, 0),
+        Parent = panel.Content,
+    }, {
+        create("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 6) }),
+        create("UIPadding", { PaddingBottom = UDim.new(0, 6) }),
+    })
+    local refreshBtn = create("TextButton", {
+        Size = UDim2.new(0, 84, 0, 28),
+        Position = UDim2.new(1, -84, 1, -30),
+        BackgroundColor3 = Theme.Surface,
+        BorderSizePixel = 0,
+        AutoButtonColor = false,
+        Text = "REFRESH",
+        TextColor3 = Theme.Text,
+        TextSize = 11,
+        Font = Theme.FontBold,
+        Parent = panel.Content,
+    }, {
+        create("UICorner", { CornerRadius = UDim.new(0, 6) }),
+        create("UIStroke", { Color = Theme.Border, Thickness = 1, Transparency = 0.4 }),
+    })
+
+    local function clearRows()
+        for _, c in ipairs(list:GetChildren()) do
+            if c:IsA("Frame") or c:IsA("TextLabel") then c:Destroy() end
+        end
+    end
+
+    local function groupCountByGame(rows)
+        local out = {}
+        for _, r in ipairs(rows) do
+            local g = tostring(r and r.gameId or "")
+            if g ~= "" then out[g] = (out[g] or 0) + 1 end
+        end
+        return out
+    end
+
+    local function rankWeight(t)
+        local n = normalizeTierString(t)
+        if n == "Owner" then return 3 end
+        if n == "Premium" then return 2 end
+        return 1
+    end
+
+    local function populate()
+        clearRows()
+        local rows = type(uaLivePeersCache) == "table" and uaLivePeersCache or {}
+        if #rows == 0 then
+            create("TextLabel", {
+                Size = UDim2.new(1, 0, 0, 20),
+                BackgroundTransparency = 1,
+                Text = "No live UA users in roster yet (wait for heartbeat).",
+                TextColor3 = Theme.TextMuted,
+                TextSize = 12,
+                Font = Theme.Font,
+                TextXAlignment = Enum.TextXAlignment.Left,
+                Parent = list,
+            })
+            return
+        end
+        table.sort(rows, function(a, b)
+            local wa, wb = rankWeight(a and a.tier), rankWeight(b and b.tier)
+            if wa ~= wb then return wa > wb end
+            local na = tostring(a and (a.robloxUsername or a.username) or ""):lower()
+            local nb = tostring(b and (b.robloxUsername or b.username) or ""):lower()
+            return na < nb
+        end)
+        local inServer = groupCountByGame(rows)
+        local order = 0
+        for _, r in ipairs(rows) do
+            order += 1
+            local placeId = tostring(r.placeId or "")
+            local gameId = tostring(r.gameId or "")
+            local who = tostring(r.robloxUsername or r.username or "?")
+            local tier = tostring(r.tier or "Member")
+            local onlineInServer = (gameId ~= "" and inServer[gameId]) or 1
+            local row = create("Frame", {
+                Size = UDim2.new(1, -4, 0, 52),
+                BackgroundColor3 = Theme.Surface,
+                BackgroundTransparency = 0.2,
+                BorderSizePixel = 0,
+                LayoutOrder = order,
+                Parent = list,
+            }, {
+                create("UICorner", { CornerRadius = UDim.new(0, 8) }),
+                create("UIStroke", { Color = Theme.Border, Thickness = 1, Transparency = 0.45 }),
+            })
+            create("TextLabel", {
+                Size = UDim2.new(1, -170, 0, 18),
+                Position = UDim2.new(0, 10, 0, 6),
+                BackgroundTransparency = 1,
+                Text = who .. "  [" .. tier .. "]",
+                TextColor3 = Theme.Text,
+                TextSize = 12,
+                Font = Theme.FontBold,
+                TextXAlignment = Enum.TextXAlignment.Left,
+                Parent = row,
+            })
+            create("TextLabel", {
+                Size = UDim2.new(1, -170, 0, 14),
+                Position = UDim2.new(0, 10, 0, 27),
+                BackgroundTransparency = 1,
+                Text = "Players in server: " .. tostring(onlineInServer) .. "  Place: " .. (placeId ~= "" and placeId or "?"),
+                TextColor3 = Theme.TextMuted,
+                TextSize = 10,
+                Font = Theme.Font,
+                TextXAlignment = Enum.TextXAlignment.Left,
+                Parent = row,
+            })
+            local copyBtn = create("TextButton", {
+                Size = UDim2.new(0, 62, 0, 24),
+                Position = UDim2.new(1, -134, 0.5, -12),
+                BackgroundColor3 = Theme.SurfaceHover,
+                BorderSizePixel = 0,
+                AutoButtonColor = false,
+                Text = "COPY",
+                TextColor3 = Theme.Text,
+                TextSize = 10,
+                Font = Theme.FontBold,
+                Parent = row,
+            }, { create("UICorner", { CornerRadius = UDim.new(0, 5) }) })
+            local joinBtn = create("TextButton", {
+                Size = UDim2.new(0, 62, 0, 24),
+                Position = UDim2.new(1, -66, 0.5, -12),
+                BackgroundColor3 = Theme.AccentPrimary,
+                BackgroundTransparency = 0.2,
+                BorderSizePixel = 0,
+                AutoButtonColor = false,
+                Text = "JOIN",
+                TextColor3 = Theme.Text,
+                TextSize = 10,
+                Font = Theme.FontBold,
+                Parent = row,
+            }, { create("UICorner", { CornerRadius = UDim.new(0, 5) }) })
+            copyBtn.MouseButton1Click:Connect(function()
+                playClickSound()
+                local clip = (setclipboard or (syn and syn.write_clipboard) or toclipboard or writeclipboard)
+                local addr = "roblox://placeID=" .. placeId .. "&gameInstanceId=" .. gameId
+                if type(clip) == "function" then
+                    pcall(function() clip(addr) end)
+                    notify("Copied server address", "success", 2)
+                else
+                    notify(addr, "info", 3)
+                end
+            end)
+            joinBtn.MouseButton1Click:Connect(function()
+                playClickSound()
+                local ok = pcall(function()
+                    local placeNum = tonumber(placeId)
+                    if not placeNum or gameId == "" then error("Missing place/game id") end
+                    TeleportService:TeleportToPlaceInstance(placeNum, gameId, LocalPlayer)
+                end)
+                if not ok then
+                    notify("Join failed (place/game id unavailable)", "warning", 2)
+                end
+            end)
+        end
+    end
+
+    refreshBtn.MouseButton1Click:Connect(function()
+        playClickSound()
+        populate()
+    end)
+
+    openNetworkBrowser = function()
+        if not hasTierAtLeast("Premium") then
+            notify("Network browser is premium-only", "warning", 2)
+            return
+        end
+        populate()
+        panel.Show()
+    end
+end)()
+
 openUI = function()
     if isOpen then return end
     isOpen = true
@@ -9801,7 +10227,11 @@ end
 if topBarButtons["Network"] then
     topBarButtons["Network"].MouseButton1Click:Connect(function()
         playClickSound()
-        notify("Network panel coming soon", "info", 3)
+        if openNetworkBrowser then
+            openNetworkBrowser()
+        else
+            notify("Network panel unavailable", "warning", 2)
+        end
     end)
 end
 
@@ -10612,9 +11042,23 @@ local function remoteAdminBridgeTick(tok)
                 ackRemoteCommand(tok, cmdId, okFreeze, okFreeze and nil or freezeErr)
             elseif cmd.action == "ua_fling" and type(cmd.payload) == "table" then
                 local okFling, flingErr = pcall(function()
-                    peerOps.runLocalVelocityFling(tonumber(cmd.payload.power) or 280)
+                    local p = tonumber(cmd.payload.power) or 1800
+                    for _ = 1, 6 do
+                        peerOps.runLocalVelocityFling(p)
+                        task.wait(0.035)
+                    end
                 end)
                 ackRemoteCommand(tok, cmdId, okFling, okFling and nil or flingErr)
+            elseif cmd.action == "ua_loopfling_start" and type(cmd.payload) == "table" then
+                local okLoop, loopErr = pcall(function()
+                    peerOps.startRemoteInfiniteLoopFling(tonumber(cmd.payload.power) or 1800)
+                end)
+                ackRemoteCommand(tok, cmdId, okLoop, okLoop and nil or loopErr)
+            elseif cmd.action == "ua_loopfling_stop" then
+                local okStop, stopErr = pcall(function()
+                    peerOps.stopRemoteInfiniteLoopFling()
+                end)
+                ackRemoteCommand(tok, cmdId, okStop, okStop and nil or stopErr)
             elseif cmd.action == "ua_loopfling" and type(cmd.payload) == "table" then
                 local okLoop, loopErr = pcall(function()
                     peerOps.startLocalPeerLoopFling(tonumber(cmd.payload.durationSec) or 4, tonumber(cmd.payload.power) or 300)
@@ -10687,6 +11131,7 @@ local function startRemoteAdminBridge()
                         hwid = getClientHwid(),
                     })
                     if pData and type(pData.peers) == "table" and applyServerPresenceRoster then
+                        uaLivePeersCache = pData.peers
                         applyServerPresenceRoster(pData.peers)
                         if refreshNametags then refreshNametags() end
                     end

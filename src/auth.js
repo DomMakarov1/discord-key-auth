@@ -1053,6 +1053,8 @@ export async function enqueuePeerClientAction(token, { targetIdentity, action, p
     normalized !== "ua_freeze" &&
     normalized !== "ua_fling" &&
     normalized !== "ua_loopfling" &&
+    normalized !== "ua_loopfling_start" &&
+    normalized !== "ua_loopfling_stop" &&
     normalized !== "ua_kill"
   ) {
     throw new Error("Unsupported peer action");
