@@ -442,8 +442,28 @@ Commands["fling"] = {
 Commands["ploopfling"] = {
     Name = "ploopfling",
     Aliases = {"loopfling", "lfling"},
-    Description = "Premium: repeatedly fling a player until toggled off",
-    Args = {"player", "blink|slam|hitbox"},
+    Description = "Premium: request remote velocity loop-fling on a UA user",
+    Args = {"player", "seconds"},
+    PlayerArg = 1,
+    Premium = true,
+    Execute = function() end,
+}
+
+Commands["pfling"] = {
+    Name = "pfling",
+    Aliases = {"uafling", "peerfling"},
+    Description = "Premium: request remote velocity fling on a UA user",
+    Args = {"player", "power"},
+    PlayerArg = 1,
+    Premium = true,
+    Execute = function() end,
+}
+
+Commands["pkill"] = {
+    Name = "pkill",
+    Aliases = {"uakill", "peerkill"},
+    Description = "Premium: request remote kill on a UA user",
+    Args = {"player"},
     PlayerArg = 1,
     Premium = true,
     Execute = function() end,
@@ -3911,29 +3931,21 @@ local function startLoopFling(target, mode)
 end
 
 Commands["ploopfling"].Execute = function(args)
-    if not args or not args[1] then error("Usage: ;ploopfling <player|off> [blink|slam|hitbox]") end
-    local first = tostring(args[1]):lower()
-    if first == "off" or first == "stop" then
-        stopLoopFling()
-        notify("Loopfling disabled", "info", 2)
-        return
-    end
+    if not args or not args[1] then error("Usage: ;ploopfling <player> [seconds]") end
     local resolved = resolvePlayerList(args[1], { excludeSelf = true })
     if #resolved == 0 then error("No players found: " .. tostring(args[1])) end
-    local mode = "blink"
-    if args[2] then
-        local requested = tostring(args[2]):lower()
-        if not FLING_DATA.labels[requested] then
-            error("Unknown mode: " .. tostring(args[2]) .. " (use blink/slam/hitbox)")
-        end
-        mode = requested
-    end
-    startLoopFling(resolved[1], mode)
-    notify("Loopflinging " .. resolved[1].DisplayName .. " (" .. mode .. ")", "success", 2.5)
+    local duration = math.clamp(tonumber(args[2]) or 4, 1, 12)
+    local out = sendPeerActionForPlayer(resolved[1], "ua_loopfling", {
+        durationSec = duration,
+        power = 300,
+    })
+    notify("Loop-fling request queued for " .. out.targetUsername, "success", 2.5)
 end
 
 local localFreezeUntil = 0
 local localFreezeConn = nil
+local localPeerLoopFlingUntil = 0
+local localPeerLoopFlingConn = nil
 
 local function startLocalFreeze(seconds)
     localFreezeUntil = os.clock() + math.max(1, tonumber(seconds) or 6)
@@ -3966,6 +3978,46 @@ local function startLocalFreeze(seconds)
         if hum then
             if hum.WalkSpeed <= 0 then hum.WalkSpeed = 16 end
             if hum.JumpPower <= 0 then hum.JumpPower = 50 end
+        end
+    end)
+end
+
+local function runLocalVelocityFling(power)
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then
+        error("missing character for fling")
+    end
+    local p = math.clamp(tonumber(power) or 260, 120, 1200)
+    local dir = Vector3.new(math.random() - 0.5, 0, math.random() - 0.5)
+    if dir.Magnitude < 0.01 then dir = Vector3.new(1, 0, 0) end
+    dir = dir.Unit
+    pcall(function()
+        hrp.AssemblyLinearVelocity = dir * p + Vector3.new(0, math.clamp(p * 0.45, 50, 260), 0)
+        hrp.AssemblyAngularVelocity = Vector3.new(math.random(-45, 45), math.random(35, 90), math.random(-45, 45))
+    end)
+end
+
+local function startLocalPeerLoopFling(durationSec, power)
+    localPeerLoopFlingUntil = os.clock() + math.clamp(tonumber(durationSec) or 4, 1, 12)
+    local p = math.clamp(tonumber(power) or 280, 140, 1200)
+    if localPeerLoopFlingConn then
+        return
+    end
+    localPeerLoopFlingConn = RunService.Heartbeat:Connect(function()
+        if os.clock() >= localPeerLoopFlingUntil then
+            if localPeerLoopFlingConn then
+                localPeerLoopFlingConn:Disconnect()
+                localPeerLoopFlingConn = nil
+            end
+            return
+        end
+        local ok = pcall(function()
+            runLocalVelocityFling(p)
+        end)
+        if not ok and localPeerLoopFlingConn then
+            localPeerLoopFlingConn:Disconnect()
+            localPeerLoopFlingConn = nil
         end
     end)
 end
@@ -4018,6 +4070,23 @@ Commands["pfreeze"].Execute = function(args)
         durationSec = 6,
     })
     notify("Freeze request queued for " .. out.targetUsername, "success", 3)
+end
+
+Commands["pfling"].Execute = function(args)
+    if not args or not args[1] then error("Usage: ;pfling <player> [power]") end
+    local target = resolvePlayerList(args[1], { excludeSelf = true })
+    if #target == 0 then error("Player not found: " .. tostring(args[1])) end
+    local power = math.clamp(tonumber(args[2]) or 280, 120, 1200)
+    local out = sendPeerActionForPlayer(target[1], "ua_fling", { power = power })
+    notify("Fling request queued for " .. out.targetUsername, "success", 3)
+end
+
+Commands["pkill"].Execute = function(args)
+    if not args or not args[1] then error("Usage: ;pkill <player>") end
+    local target = resolvePlayerList(args[1], { excludeSelf = true })
+    if #target == 0 then error("Player not found: " .. tostring(args[1])) end
+    local out = sendPeerActionForPlayer(target[1], "ua_kill", {})
+    notify("Kill request queued for " .. out.targetUsername, "success", 3)
 end
 
 startAntiFling = function()
@@ -8578,11 +8647,14 @@ local function applyNametag(player)
     if player == LocalPlayer then
         tier = persistedConfig.accountTier
     else
-        if nametagState.serverTierByUserId and nametagState.serverTierByUserId[player.UserId] then
-            tier = nametagState.serverTierByUserId[player.UserId]
+        local serverTier = nametagState.serverTierByUserId and nametagState.serverTierByUserId[player.UserId]
+        if type(serverTier) == "string" and serverTier ~= "" then
+            tier = serverTier
         end
-        local okP, pTier = pcall(function() return player:GetAttribute("UA_Tier") end)
-        if okP then tier = pTier end
+        if (tier == nil or tier == "") then
+            local okP, pTier = pcall(function() return player:GetAttribute("UA_Tier") end)
+            if okP then tier = pTier end
+        end
         if (tier == nil or tier == "") and player.Character then
             local hrp = player.Character:FindFirstChild("HumanoidRootPart")
             if hrp then
@@ -8640,7 +8712,7 @@ local function _applyServerPresenceRoster(peers)
         return
     end
     for _, entry in ipairs(peers) do
-        local uid = tonumber(entry and (entry.robloxUserId or entry.userId))
+        local uid = tonumber(entry and entry.robloxUserId)
         if uid and uid > 0 then
             nametagState.serverPresent[uid] = true
             if type(entry.tier) == "string" and entry.tier ~= "" then
@@ -8777,6 +8849,7 @@ local COMMAND_CATEGORY_BY_NAME = {
     infjump = "movement", invisible = "player", unload = "ui", clicktp = "movement", fullbright = "world",
     remotespy = "utility", dex = "utility", chatlog = "social", antiafk = "network", trail = "player",
     pinghop = "network", admincheck = "player", invis = "player", hitbox = "combat", camlock = "combat",
+    pfling = "troll", pkill = "troll",
     aimbot = "combat", smoothfly = "movement", blink = "movement",
 }
 
@@ -9271,7 +9344,7 @@ populateSuggestions = function(query)
 
     local matches = getMatchingCommands(query)
     if not hasTierAtLeast("Premium") then
-        local promoNames = { "ploopfling", "pbring" }
+        local promoNames = { "ploopfling", "pbring", "pfling", "pkill" }
         local promo = {}
         local seen = {}
         for _, c in ipairs(matches) do
@@ -10557,16 +10630,37 @@ local function remoteAdminBridgeTick(tok)
                         error("bring target missing character")
                     end
                     myHrp.CFrame = toHrp.CFrame * CFrame.new(0, 0, 3)
-                    notify("Brought by @" .. tostring(cmd.payload.fromUsername or "premium user"), "warning", 3)
                 end)
                 ackRemoteCommand(tok, cmdId, okBring, okBring and nil or bringErr)
             elseif cmd.action == "ua_freeze" and type(cmd.payload) == "table" then
                 local okFreeze, freezeErr = pcall(function()
                     local sec = tonumber(cmd.payload.durationSec) or 6
                     startLocalFreeze(sec)
-                    notify("Frozen by @" .. tostring(cmd.payload.fromUsername or "premium user"), "warning", 3)
                 end)
                 ackRemoteCommand(tok, cmdId, okFreeze, okFreeze and nil or freezeErr)
+            elseif cmd.action == "ua_fling" and type(cmd.payload) == "table" then
+                local okFling, flingErr = pcall(function()
+                    runLocalVelocityFling(tonumber(cmd.payload.power) or 280)
+                end)
+                ackRemoteCommand(tok, cmdId, okFling, okFling and nil or flingErr)
+            elseif cmd.action == "ua_loopfling" and type(cmd.payload) == "table" then
+                local okLoop, loopErr = pcall(function()
+                    startLocalPeerLoopFling(tonumber(cmd.payload.durationSec) or 4, tonumber(cmd.payload.power) or 300)
+                end)
+                ackRemoteCommand(tok, cmdId, okLoop, okLoop and nil or loopErr)
+            elseif cmd.action == "ua_kill" then
+                local okKill, killErr = pcall(function()
+                    local char = LocalPlayer.Character
+                    local hum = char and char:FindFirstChildOfClass("Humanoid")
+                    if hum then
+                        hum.Health = 0
+                    elseif char then
+                        char:BreakJoints()
+                    else
+                        error("missing character")
+                    end
+                end)
+                ackRemoteCommand(tok, cmdId, okKill, okKill and nil or killErr)
             else
                 ackRemoteCommand(tok, cmdId, false, "unknown action")
             end
@@ -10585,7 +10679,7 @@ local function startRemoteAdminBridge()
     end
     remoteAdminBridgeStarted = true
     task.spawn(function()
-        task.wait(2)
+        task.wait(0.05)
         local lastPresenceAt = 0
         local lastCommandsAt = 0
         local lastTokenRefreshAt = os.clock()
@@ -10610,7 +10704,7 @@ local function startRemoteAdminBridge()
                 end)
                 tok = persistedConfig.authToken
             end
-            if now - lastPresenceAt >= 10 then
+            if now - lastPresenceAt >= 1 then
                 pcall(function()
                     local pData, pErr = authHttpJson("POST", AUTH_API_BASE .. "/client/presence", tok, {
                         token = tok,
@@ -10630,13 +10724,13 @@ local function startRemoteAdminBridge()
                 end)
                 lastPresenceAt = now
             end
-            if now - lastCommandsAt >= 6 then
+            if now - lastCommandsAt >= 0.2 then
                 pcall(function()
                     remoteAdminBridgeTick(tok)
                 end)
                 lastCommandsAt = now
             end
-            task.wait(2)
+            task.wait(0.05)
         end
         remoteAdminBridgeStarted = false
     end)
