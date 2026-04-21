@@ -1048,7 +1048,13 @@ export async function enqueuePeerClientAction(token, { targetIdentity, action, p
   }
 
   const normalized = String(action || "").trim().toLowerCase();
-  if (normalized !== "ua_bring" && normalized !== "ua_freeze") {
+  if (
+    normalized !== "ua_bring" &&
+    normalized !== "ua_freeze" &&
+    normalized !== "ua_fling" &&
+    normalized !== "ua_loopfling" &&
+    normalized !== "ua_kill"
+  ) {
     throw new Error("Unsupported peer action");
   }
 
