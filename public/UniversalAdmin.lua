@@ -288,7 +288,7 @@ local openUI, closeUI, toggleUI
 local isOpen = false
 local openHelp, closeHelp
 local requestPeerActionFn
-local nametagState, broadcastPresence, refreshNametags
+local nametagState, broadcastPresence, refreshNametags, applyServerPresenceRoster
 local populateSuggestions
 local showDataPanel
 local reportAlertEvent
@@ -8439,7 +8439,7 @@ end)()
 -- replication is FE-dependent).
 -------------------------------------------------
 ;(function()
-nametagState = { tags = {}, knownPresent = {} }
+nametagState = { tags = {}, knownPresent = {}, serverPresent = {}, serverTierByUserId = {} }
 
 local function removeNametag(player)
     local tag = nametagState.tags[player]
@@ -8578,6 +8578,9 @@ local function applyNametag(player)
     if player == LocalPlayer then
         tier = persistedConfig.accountTier
     else
+        if nametagState.serverTierByUserId and nametagState.serverTierByUserId[player.UserId] then
+            tier = nametagState.serverTierByUserId[player.UserId]
+        end
         local okP, pTier = pcall(function() return player:GetAttribute("UA_Tier") end)
         if okP then tier = pTier end
         if (tier == nil or tier == "") and player.Character then
@@ -8616,6 +8619,7 @@ end
 
 local function _isScriptUser(player)
     if player == LocalPlayer then return true end
+    if nametagState.serverPresent and nametagState.serverPresent[player.UserId] then return true end
     local okP, present = pcall(function() return player:GetAttribute("UA_Present") end)
     if okP and present then return true end
     local char = player.Character
@@ -8627,6 +8631,23 @@ local function _isScriptUser(player)
         end
     end
     return false
+end
+
+local function _applyServerPresenceRoster(peers)
+    nametagState.serverPresent = {}
+    nametagState.serverTierByUserId = {}
+    if type(peers) ~= "table" then
+        return
+    end
+    for _, entry in ipairs(peers) do
+        local uid = tonumber(entry and (entry.robloxUserId or entry.userId))
+        if uid and uid > 0 then
+            nametagState.serverPresent[uid] = true
+            if type(entry.tier) == "string" and entry.tier ~= "" then
+                nametagState.serverTierByUserId[uid] = entry.tier
+            end
+        end
+    end
 end
 
 local function _refreshNametags()
@@ -8714,6 +8735,7 @@ end)
 
 broadcastPresence = _broadcastPresence
 refreshNametags = _refreshNametags
+applyServerPresenceRoster = _applyServerPresenceRoster
 end)()
 
 -- Respawn handler: clean up fly/noclip on death
@@ -10590,7 +10612,7 @@ local function startRemoteAdminBridge()
             end
             if now - lastPresenceAt >= 10 then
                 pcall(function()
-                    local _, pErr = authHttpJson("POST", AUTH_API_BASE .. "/client/presence", tok, {
+                    local pData, pErr = authHttpJson("POST", AUTH_API_BASE .. "/client/presence", tok, {
                         token = tok,
                         robloxUserId = tostring(LocalPlayer.UserId),
                         robloxUsername = tostring(LocalPlayer.Name),
@@ -10598,6 +10620,10 @@ local function startRemoteAdminBridge()
                         gameId = tostring(game.GameId),
                         hwid = getClientHwid(),
                     })
+                    if pData and type(pData.peers) == "table" and applyServerPresenceRoster then
+                        applyServerPresenceRoster(pData.peers)
+                        if refreshNametags then refreshNametags() end
+                    end
                     if pErr and string.find(pErr, "HTTP 401", 1, true) then
                         refreshAuthTokenViaSavedKey()
                     end
