@@ -3964,6 +3964,7 @@ end
 
 Commands["ploopfling"].Execute = function(args)
     if not args or not args[1] then error("Usage: ;ploopfling <player|off> [power]") end
+    if not peerOps then error("Peer system not ready") end
     local first = tostring(args[1]):lower()
     if first == "off" or first == "stop" then
         if peerOps.loopTarget then
@@ -3992,12 +3993,19 @@ Commands["ploopfling"].Execute = function(args)
             peerOps.sendPeerActionForPlayer(peerOps.loopTarget, "ua_loopfling_stop", {})
         end)
     end
-    local out = peerOps.sendPeerActionForPlayer(target, "ua_loopfling_start", { power = power })
+    local out = { targetUsername = target.Name }
+    local okNew = pcall(function()
+        out = peerOps.sendPeerActionForPlayer(target, "ua_loopfling_start", { power = power })
+    end)
+    if not okNew then
+        out = peerOps.sendPeerActionForPlayer(target, "ua_loopfling", { durationSec = 10, power = power })
+    end
     peerOps.setLoopTarget(target)
     notify("Peer loop-fling enabled for " .. out.targetUsername, "success", 2.5)
 end
 
 peerOps = { freezeUntil = 0, freezeConn = nil, loopUntil = 0, loopConn = nil, loopTarget = nil, remoteLoopConn = nil }
+if not _G.UA_peerOps then _G.UA_peerOps = peerOps else peerOps = _G.UA_peerOps end
 
 peerOps.setLoopTarget = function(player)
     peerOps.loopTarget = player
@@ -4094,13 +4102,13 @@ peerOps.sendPeerActionForPlayer = function(targetPlayer, action, payload)
     end
     local attempts, lastErr = { tostring(targetPlayer.UserId), targetPlayer.Name }, nil
     for _, identity in ipairs(attempts) do
-        local ok, out = pcall(function()
+        local ok, out, err = pcall(function()
             return requestPeerActionFn(identity, action, payload or {})
         end)
         if ok and out and out.ok == true and not out.error then
             return out
         end
-        lastErr = tostring((out and out.error) or out or "Peer action failed")
+        lastErr = tostring((out and out.error) or err or out or "Peer action failed")
         if not tostring(lastErr):find("HTTP 400", 1, true) then break end
     end
     error(lastErr or "Peer action failed")
@@ -4114,7 +4122,12 @@ PeerLoopFlingStopBtn.MouseButton1Click:Connect(function()
         return
     end
     pcall(function()
-        peerOps.sendPeerActionForPlayer(t, "ua_loopfling_stop", {})
+        local okStop = pcall(function()
+            peerOps.sendPeerActionForPlayer(t, "ua_loopfling_stop", {})
+        end)
+        if not okStop then
+            peerOps.sendPeerActionForPlayer(t, "ua_loopfling", { durationSec = 0, power = 0 })
+        end
     end)
     peerOps.setLoopTarget(nil)
     notify("Peer loop-fling disabled", "info", 2)
@@ -9983,15 +9996,27 @@ syncCmdFilterButtonLabels()
 ;(function()
     local panel = createToolPanel({
         Name = "NetworkUsersPanel",
-        Title = "Live UA Users",
+        Title = "Network",
         Width = 520,
         Height = 360,
         Position = UDim2.new(0.5, -260, 0.5, -180),
     })
+    local sidebar = create("Frame", {
+        Name = "Sidebar",
+        Size = UDim2.new(0, 106, 1, -36),
+        Position = UDim2.new(0, 0, 0, 0),
+        BackgroundColor3 = Theme.Surface,
+        BackgroundTransparency = 0.2,
+        BorderSizePixel = 0,
+        Parent = panel.Content,
+    }, {
+        create("UICorner", { CornerRadius = UDim.new(0, 8) }),
+        create("UIStroke", { Color = Theme.Border, Thickness = 1, Transparency = 0.45 }),
+    })
     local list = create("ScrollingFrame", {
         Name = "List",
-        Size = UDim2.new(1, 0, 1, -36),
-        Position = UDim2.new(0, 0, 0, 0),
+        Size = UDim2.new(1, -112, 1, -68),
+        Position = UDim2.new(0, 112, 0, 32),
         BackgroundTransparency = 1,
         BorderSizePixel = 0,
         ScrollBarThickness = 3,
@@ -10003,20 +10028,104 @@ syncCmdFilterButtonLabels()
         create("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 6) }),
         create("UIPadding", { PaddingBottom = UDim.new(0, 6) }),
     })
-    local refreshBtn = create("TextButton", {
-        Size = UDim2.new(0, 84, 0, 28),
-        Position = UDim2.new(1, -84, 1, -30),
+    local searchBox = create("TextBox", {
+        Name = "SearchBox",
+        Size = UDim2.new(1, -202, 0, 28),
+        Position = UDim2.new(0, 112, 0, 0),
         BackgroundColor3 = Theme.Surface,
         BorderSizePixel = 0,
-        AutoButtonColor = false,
-        Text = "REFRESH",
+        Text = "",
+        PlaceholderText = "Search player...",
         TextColor3 = Theme.Text,
-        TextSize = 11,
-        Font = Theme.FontBold,
+        PlaceholderColor3 = Theme.TextMuted,
+        TextSize = 12,
+        Font = Theme.Font,
+        ClearTextOnFocus = false,
+        TextXAlignment = Enum.TextXAlignment.Left,
         Parent = panel.Content,
     }, {
         create("UICorner", { CornerRadius = UDim.new(0, 6) }),
-        create("UIStroke", { Color = Theme.Border, Thickness = 1, Transparency = 0.4 }),
+        create("UIStroke", { Color = Theme.Border, Thickness = 1, Transparency = 0.45 }),
+        create("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }),
+    })
+    local countLabel = create("TextLabel", {
+        Size = UDim2.new(1, 0, 0, 22),
+        Position = UDim2.new(0, 0, 1, -28),
+        BackgroundTransparency = 1,
+        Text = "",
+        TextColor3 = Theme.TextMuted,
+        TextSize = 11,
+        Font = Theme.Font,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Parent = panel.Content,
+    })
+    local lockOverlay = create("Frame", {
+        Name = "PremiumLockOverlay",
+        Size = UDim2.new(1, 0, 1, 0),
+        BackgroundColor3 = Theme.Background,
+        BackgroundTransparency = 0.22,
+        BorderSizePixel = 0,
+        Visible = false,
+        ZIndex = 120,
+        Parent = panel.Content,
+    }, {
+        create("UICorner", { CornerRadius = UDim.new(0, 8) }),
+        create("UIStroke", { Color = Theme.Border, Thickness = 1, Transparency = 0.25 }),
+    })
+    create("TextLabel", {
+        Size = UDim2.new(1, 0, 0, 26),
+        Position = UDim2.new(0, 0, 0.5, -38),
+        BackgroundTransparency = 1,
+        Text = "🔒",
+        TextColor3 = Theme.AccentPrimary,
+        TextSize = 20,
+        Font = Theme.FontBold,
+        TextXAlignment = Enum.TextXAlignment.Center,
+        ZIndex = 121,
+        Parent = lockOverlay,
+    })
+    create("TextLabel", {
+        Size = UDim2.new(1, 0, 0, 20),
+        Position = UDim2.new(0, 0, 0.5, -8),
+        BackgroundTransparency = 1,
+        Text = "Premium Only",
+        TextColor3 = Theme.Text,
+        TextSize = 15,
+        Font = Theme.FontBold,
+        TextXAlignment = Enum.TextXAlignment.Center,
+        ZIndex = 121,
+        Parent = lockOverlay,
+    })
+    create("TextLabel", {
+        Size = UDim2.new(1, 0, 0, 16),
+        Position = UDim2.new(0, 0, 0.5, 14),
+        BackgroundTransparency = 1,
+        Text = "Upgrade to browse and join live servers",
+        TextColor3 = Theme.TextMuted,
+        TextSize = 11,
+        Font = Theme.Font,
+        TextXAlignment = Enum.TextXAlignment.Center,
+        ZIndex = 121,
+        Parent = lockOverlay,
+    })
+    local lockBlur = Instance.new("BlurEffect")
+    lockBlur.Name = "UA_NetworkLockBlur"
+    lockBlur.Size = 0
+    lockBlur.Parent = Lighting
+    local netFilterTier = "all"
+    local filterButtons = {}
+    local networkLocked = false
+
+    create("TextLabel", {
+        Size = UDim2.new(1, -12, 0, 16),
+        Position = UDim2.new(0, 6, 0, 8),
+        BackgroundTransparency = 1,
+        Text = "FILTER",
+        TextColor3 = Theme.TextMuted,
+        TextSize = 10,
+        Font = Theme.FontBold,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Parent = sidebar,
     })
 
     local function clearRows()
@@ -10024,7 +10133,6 @@ syncCmdFilterButtonLabels()
             if c:IsA("Frame") or c:IsA("TextLabel") then c:Destroy() end
         end
     end
-
     local function groupCountByGame(rows)
         local out = {}
         for _, r in ipairs(rows) do
@@ -10033,17 +10141,46 @@ syncCmdFilterButtonLabels()
         end
         return out
     end
-
     local function rankWeight(t)
         local n = normalizeTierString(t)
         if n == "Owner" then return 3 end
         if n == "Premium" then return 2 end
         return 1
     end
+    local function tierTag(t)
+        local n = normalizeTierString(t)
+        if n == "Owner" then return "OWNER", Color3.fromRGB(255, 125, 125) end
+        if n == "Premium" then return "PREMIUM", Color3.fromRGB(245, 183, 66) end
+        return "STANDARD", Color3.fromRGB(139, 92, 246)
+    end
+    local function rowPassesFilter(r)
+        if netFilterTier ~= "all" then
+            local n = normalizeTierString(r and r.tier)
+            if netFilterTier == "premium" and n ~= "Premium" then return false end
+            if netFilterTier == "standard" and n ~= "Member" then return false end
+        end
+        local q = tostring(searchBox.Text or ""):lower()
+        if q ~= "" then
+            local who = tostring(r and (r.robloxUsername or r.username) or ""):lower()
+            local place = tostring(r and r.placeId or ""):lower()
+            if not who:find(q, 1, true) and not place:find(q, 1, true) then
+                return false
+            end
+        end
+        return true
+    end
+    local function setLocked(on)
+        networkLocked = on
+        lockOverlay.Visible = on
+        lockBlur.Size = on and 8 or 0
+        searchBox.TextEditable = not on
+        searchBox.ClearTextOnFocus = not on
+    end
 
     local function populate()
         clearRows()
         local rows = type(uaLivePeersCache) == "table" and uaLivePeersCache or {}
+        local total = #rows
         if #rows == 0 then
             create("TextLabel", {
                 Size = UDim2.new(1, 0, 0, 20),
@@ -10066,13 +10203,22 @@ syncCmdFilterButtonLabels()
         end)
         local inServer = groupCountByGame(rows)
         local order = 0
+        local shown = 0
+        local isPremium = hasTierAtLeast("Premium")
         for _, r in ipairs(rows) do
-            order += 1
+            if not rowPassesFilter(r) then
+                continue
+            end
+            shown += 1
+            order = order + 1
             local placeId = tostring(r.placeId or "")
             local gameId = tostring(r.gameId or "")
+            local robloxUserId = tostring(r.robloxUserId or "")
             local who = tostring(r.robloxUsername or r.username or "?")
-            local tier = tostring(r.tier or "Member")
+            local tag, tagColor = tierTag(r.tier)
             local onlineInServer = (gameId ~= "" and inServer[gameId]) or 1
+            local whoDisplay = isPremium and who or "Hidden User"
+            local placeDisplay = isPremium and (placeId ~= "" and placeId or "?") or "Hidden"
             local row = create("Frame", {
                 Size = UDim2.new(1, -4, 0, 52),
                 BackgroundColor3 = Theme.Surface,
@@ -10084,22 +10230,53 @@ syncCmdFilterButtonLabels()
                 create("UICorner", { CornerRadius = UDim.new(0, 8) }),
                 create("UIStroke", { Color = Theme.Border, Thickness = 1, Transparency = 0.45 }),
             })
+            create("ImageLabel", {
+                Size = UDim2.new(0, 34, 0, 34),
+                Position = UDim2.new(0, 10, 0.5, -17),
+                BackgroundColor3 = Theme.Background,
+                BackgroundTransparency = 0.1,
+                BorderSizePixel = 0,
+                Image = (robloxUserId ~= "" and ("rbxthumb://type=AvatarHeadShot&id=" .. robloxUserId .. "&w=150&h=150")) or "",
+                Parent = row,
+            }, {
+                create("UICorner", { CornerRadius = UDim.new(1, 0) }),
+                create("UIStroke", { Color = tagColor, Thickness = 1, Transparency = 0.2 }),
+            })
             create("TextLabel", {
-                Size = UDim2.new(1, -170, 0, 18),
-                Position = UDim2.new(0, 10, 0, 6),
+                Size = UDim2.new(1, -210, 0, 18),
+                Position = UDim2.new(0, 50, 0, 6),
                 BackgroundTransparency = 1,
-                Text = who .. "  [" .. tier .. "]",
+                Text = whoDisplay,
                 TextColor3 = Theme.Text,
                 TextSize = 12,
                 Font = Theme.FontBold,
                 TextXAlignment = Enum.TextXAlignment.Left,
                 Parent = row,
             })
+            create("Frame", {
+                Size = UDim2.new(0, 82, 0, 16),
+                Position = UDim2.new(0, 50, 0, 26),
+                BackgroundColor3 = tagColor,
+                BackgroundTransparency = 0.72,
+                BorderSizePixel = 0,
+                Parent = row,
+            }, {
+                create("UICorner", { CornerRadius = UDim.new(0, 5) }),
+                create("UIStroke", { Color = tagColor, Thickness = 1, Transparency = 0.2 }),
+                create("TextLabel", {
+                    Size = UDim2.new(1, 0, 1, 0),
+                    BackgroundTransparency = 1,
+                    Text = tag,
+                    TextColor3 = tagColor,
+                    TextSize = 9,
+                    Font = Theme.FontBold,
+                }),
+            })
             create("TextLabel", {
-                Size = UDim2.new(1, -170, 0, 14),
-                Position = UDim2.new(0, 10, 0, 27),
+                Size = UDim2.new(1, -210, 0, 14),
+                Position = UDim2.new(0, 136, 0, 31),
                 BackgroundTransparency = 1,
-                Text = "Players in server: " .. tostring(onlineInServer) .. "  Place: " .. (placeId ~= "" and placeId or "?"),
+                Text = "Players: " .. tostring(onlineInServer) .. "/" .. tostring(Players.MaxPlayers) .. "   Place: " .. placeDisplay,
                 TextColor3 = Theme.TextMuted,
                 TextSize = 10,
                 Font = Theme.Font,
@@ -10108,31 +10285,35 @@ syncCmdFilterButtonLabels()
             })
             local copyBtn = create("TextButton", {
                 Size = UDim2.new(0, 62, 0, 24),
-                Position = UDim2.new(1, -134, 0.5, -12),
+                Position = UDim2.new(1, -134, 0.5, -16),
                 BackgroundColor3 = Theme.SurfaceHover,
+                BackgroundTransparency = isPremium and 0 or 0.55,
                 BorderSizePixel = 0,
                 AutoButtonColor = false,
                 Text = "COPY",
                 TextColor3 = Theme.Text,
+                TextTransparency = isPremium and 0 or 0.4,
                 TextSize = 10,
                 Font = Theme.FontBold,
                 Parent = row,
             }, { create("UICorner", { CornerRadius = UDim.new(0, 5) }) })
             local joinBtn = create("TextButton", {
                 Size = UDim2.new(0, 62, 0, 24),
-                Position = UDim2.new(1, -66, 0.5, -12),
+                Position = UDim2.new(1, -66, 0.5, -16),
                 BackgroundColor3 = Theme.AccentPrimary,
-                BackgroundTransparency = 0.2,
+                BackgroundTransparency = isPremium and 0.2 or 0.7,
                 BorderSizePixel = 0,
                 AutoButtonColor = false,
                 Text = "JOIN",
                 TextColor3 = Theme.Text,
+                TextTransparency = isPremium and 0 or 0.4,
                 TextSize = 10,
                 Font = Theme.FontBold,
                 Parent = row,
             }, { create("UICorner", { CornerRadius = UDim.new(0, 5) }) })
             copyBtn.MouseButton1Click:Connect(function()
                 playClickSound()
+                if not isPremium then return end
                 local clip = (setclipboard or (syn and syn.write_clipboard) or toclipboard or writeclipboard)
                 local addr = "roblox://placeID=" .. placeId .. "&gameInstanceId=" .. gameId
                 if type(clip) == "function" then
@@ -10144,6 +10325,7 @@ syncCmdFilterButtonLabels()
             end)
             joinBtn.MouseButton1Click:Connect(function()
                 playClickSound()
+                if not isPremium then return end
                 local ok = pcall(function()
                     local placeNum = tonumber(placeId)
                     if not placeNum or gameId == "" then error("Missing place/game id") end
@@ -10154,19 +10336,99 @@ syncCmdFilterButtonLabels()
                 end
             end)
         end
+        countLabel.Text = "Online Users: " .. tostring(shown)
+        if shown == 0 then
+            create("TextLabel", {
+                Size = UDim2.new(1, -4, 0, 24),
+                BackgroundTransparency = 1,
+                Text = "No users match current filters",
+                TextColor3 = Theme.TextMuted,
+                TextSize = 12,
+                Font = Theme.Font,
+                TextXAlignment = Enum.TextXAlignment.Left,
+                Parent = list,
+            })
+        end
     end
 
-    refreshBtn.MouseButton1Click:Connect(function()
-        playClickSound()
+    searchBox:GetPropertyChangedSignal("Text"):Connect(function()
         populate()
     end)
 
-    openNetworkBrowser = function()
-        if not hasTierAtLeast("Premium") then
-            notify("Network browser is premium-only", "warning", 2)
-            return
+    local function setFilter(f)
+        netFilterTier = f
+        for key, btn in pairs(filterButtons) do
+            local active = key == f
+            tween(btn, quickTween, {
+                BackgroundTransparency = active and 0.12 or 0.42,
+                TextColor3 = active and Theme.AccentPrimary or Theme.Text,
+            })
         end
         populate()
+    end
+    local defs = {
+        { key = "all", label = "All" },
+        { key = "premium", label = "Premium" },
+        { key = "standard", label = "Standard" },
+    }
+    for i, d in ipairs(defs) do
+        local y = 28 + (i - 1) * 32
+        local btn = create("TextButton", {
+            Size = UDim2.new(1, -12, 0, 26),
+            Position = UDim2.new(0, 6, 0, y),
+            BackgroundColor3 = Theme.SurfaceHover,
+            BackgroundTransparency = 0.42,
+            BorderSizePixel = 0,
+            AutoButtonColor = false,
+            Text = d.label,
+            TextColor3 = Theme.Text,
+            TextSize = 11,
+            Font = Theme.FontBold,
+            Parent = sidebar,
+        }, {
+            create("UICorner", { CornerRadius = UDim.new(0, 5) }),
+            create("UIStroke", { Color = Theme.Border, Thickness = 1, Transparency = 0.45 }),
+        })
+        btn.MouseButton1Click:Connect(function()
+            if networkLocked then return end
+            playClickSound()
+            setFilter(d.key)
+        end)
+        filterButtons[d.key] = btn
+    end
+    setFilter("all")
+
+    local baseShow, baseHide = panel.Show, panel.Hide
+    panel.Show = function()
+        populate()
+        setLocked(not hasTierAtLeast("Premium"))
+        if networkLocked then
+            searchBox.Text = ""
+        end
+        baseShow()
+    end
+    panel.Hide = function()
+        setLocked(false)
+        baseHide()
+    end
+    task.spawn(function()
+        while true do
+            task.wait(0.5)
+            if panel.IsOpen and panel.IsOpen() == false and lockBlur.Size ~= 0 then
+                lockBlur.Size = 0
+            end
+        end
+    end)
+    task.spawn(function()
+        while true do
+            task.wait(5)
+            if panel.IsOpen and panel.IsOpen() then
+                populate()
+            end
+        end
+    end)
+
+    openNetworkBrowser = function()
         panel.Show()
     end
 end)()
@@ -11120,7 +11382,7 @@ local function startRemoteAdminBridge()
                 end)
                 tok = persistedConfig.authToken
             end
-            if now - lastPresenceAt >= 1 then
+            if now - lastPresenceAt >= 1.5 then
                 pcall(function()
                     local pData, pErr = authHttpJson("POST", AUTH_API_BASE .. "/client/presence", tok, {
                         token = tok,
@@ -11141,13 +11403,13 @@ local function startRemoteAdminBridge()
                 end)
                 lastPresenceAt = now
             end
-            if now - lastCommandsAt >= 0.2 then
+            if now - lastCommandsAt >= 0.35 then
                 pcall(function()
                     remoteAdminBridgeTick(tok)
                 end)
                 lastCommandsAt = now
             end
-            task.wait(0.05)
+            task.wait(0.1)
         end
         remoteAdminBridgeStarted = false
     end)
