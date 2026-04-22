@@ -116,6 +116,22 @@ local function tierLevel(tier)
     return 1
 end
 
+local function encodeAccentColor(c)
+    if typeof(c) ~= "Color3" then return nil end
+    local r = math.clamp(math.floor(c.R * 255 + 0.5), 0, 255)
+    local g = math.clamp(math.floor(c.G * 255 + 0.5), 0, 255)
+    local b = math.clamp(math.floor(c.B * 255 + 0.5), 0, 255)
+    return tostring(r) .. "," .. tostring(g) .. "," .. tostring(b)
+end
+
+local function decodeAccentColor(raw)
+    if type(raw) ~= "string" then return nil end
+    local r, g, b = string.match(raw, "^(%d+),(%d+),(%d+)$")
+    r, g, b = tonumber(r), tonumber(g), tonumber(b)
+    if not r or not g or not b then return nil end
+    return Color3.fromRGB(math.clamp(r, 0, 255), math.clamp(g, 0, 255), math.clamp(b, 0, 255))
+end
+
 -------------------------------------------------
 -- PERSISTENT SETTINGS (executor filesystem)
 -- Uses writefile/readfile/isfile which most major executors support.
@@ -1038,12 +1054,14 @@ local AdminIconImage = create("ImageLabel", {
     BackgroundTransparency = 1,
     Image = _adminIconUrl,
     ImageTransparency = 0,
+    ImageColor3 = Theme.AccentPrimary,
     ScaleType = Enum.ScaleType.Fit,
     ZIndex = 9,
     Parent = AdminIconHolder,
 }, {
     create("UICorner", { CornerRadius = UDim.new(1, 0) }),
 })
+local AdminIconRingStroke = AdminIconHolder:FindFirstChildOfClass("UIStroke")
 
 if _adminIconUrl ~= "" then
     pcall(function()
@@ -4885,6 +4903,16 @@ do
 local function applyAccentColor(primary, secondary)
     Theme.AccentPrimary = primary
     Theme.AccentSecondary = secondary or primary
+    if AdminIconImage then
+        pcall(function()
+            AdminIconImage.ImageColor3 = Theme.AccentPrimary
+        end)
+    end
+    if AdminIconRingStroke then
+        pcall(function()
+            AdminIconRingStroke.Color = Theme.AccentPrimary
+        end)
+    end
     -- Recolor known UIGradients in the UI
     for _, d in ipairs(ScreenGui:GetDescendants()) do
         if d:IsA("UIGradient") then
@@ -4908,6 +4936,10 @@ local function applyAccentColor(primary, secondary)
             end
         end
     end
+    pcall(function()
+        if broadcastPresence then broadcastPresence() end
+        if refreshNametags then refreshNametags() end
+    end)
 end
 
 settingsPanel = createToolPanel({
@@ -8727,7 +8759,7 @@ end)()
 -- replication is FE-dependent).
 -------------------------------------------------
 ;(function()
-nametagState = { tags = {}, knownPresent = {}, serverPresent = {}, serverTierByUserId = {} }
+nametagState = { tags = {}, knownPresent = {}, serverPresent = {}, serverTierByUserId = {}, serverAccentByUserId = {} }
 
 local function removeNametag(player)
     local tag = nametagState.tags[player]
@@ -8852,7 +8884,7 @@ local function buildNametagGui()
     nameLabel.TextTruncate = Enum.TextTruncate.AtEnd
     nameLabel.Parent = card
 
-    return holder, nameLabel, topLabel
+    return holder, nameLabel, topLabel, accentGrad, iconInner, iconFallback
 end
 
 local function applyNametag(player)
@@ -8860,7 +8892,7 @@ local function applyNametag(player)
     local head = player.Character:FindFirstChild("Head")
     if not head then return end
     removeNametag(player)
-    local gui, nameLabel, topLabel = buildNametagGui()
+    local gui, nameLabel, topLabel, accentGrad, iconInner, iconFallback = buildNametagGui()
     nameLabel.Text = player.DisplayName
     local tier = nil
     if player == LocalPlayer then
@@ -8884,6 +8916,25 @@ local function applyNametag(player)
     end
     local tierNorm = normalizeTierString(tier)
     local tierLabel = tierToDisplayLabel(tierNorm)
+    local accentColor = nil
+    if player == LocalPlayer then
+        accentColor = Theme.AccentPrimary
+    else
+        local serverAccent = nametagState.serverAccentByUserId and nametagState.serverAccentByUserId[player.UserId]
+        accentColor = decodeAccentColor(serverAccent)
+        if not accentColor then
+            local okA, attrA = pcall(function() return player:GetAttribute("UA_Accent") end)
+            if okA then accentColor = decodeAccentColor(attrA) end
+        end
+        if not accentColor and player.Character then
+            local hrp = player.Character:FindFirstChild("HumanoidRootPart")
+            if hrp then
+                local okH, attrH = pcall(function() return hrp:GetAttribute("UA_Accent") end)
+                if okH then accentColor = decodeAccentColor(attrH) end
+            end
+        end
+    end
+    if not accentColor then accentColor = Color3.fromRGB(99, 102, 241) end
     topLabel.Text = string.upper(tierLabel)
     if tierNorm == "Premium" then
         topLabel.TextColor3 = Color3.fromRGB(245, 183, 66)
@@ -8892,6 +8943,15 @@ local function applyNametag(player)
     else
         topLabel.TextColor3 = Color3.fromRGB(139, 92, 246)
     end
+    if accentGrad then
+        accentGrad.Color = ColorSequence.new({
+            ColorSequenceKeypoint.new(0, accentColor),
+            ColorSequenceKeypoint.new(0.5, accentColor),
+            ColorSequenceKeypoint.new(1, accentColor),
+        })
+    end
+    if iconInner then iconInner.ImageColor3 = accentColor end
+    if iconFallback then iconFallback.TextColor3 = accentColor end
     gui.Parent = head
     nametagState.tags[player] = gui
 end
@@ -8903,9 +8963,11 @@ local function _broadcastPresence()
     if hrp then
         pcall(function() hrp:SetAttribute("UA_Present", true) end)
         pcall(function() hrp:SetAttribute("UA_Tier", normalizeTierString(persistedConfig.accountTier)) end)
+        pcall(function() hrp:SetAttribute("UA_Accent", encodeAccentColor(Theme.AccentPrimary)) end)
     end
     pcall(function() LocalPlayer:SetAttribute("UA_Present", true) end)
     pcall(function() LocalPlayer:SetAttribute("UA_Tier", normalizeTierString(persistedConfig.accountTier)) end)
+    pcall(function() LocalPlayer:SetAttribute("UA_Accent", encodeAccentColor(Theme.AccentPrimary)) end)
 end
 
 local function _isScriptUser(player)
@@ -8927,6 +8989,7 @@ end
 local function _applyServerPresenceRoster(peers)
     nametagState.serverPresent = {}
     nametagState.serverTierByUserId = {}
+    nametagState.serverAccentByUserId = {}
     if type(peers) ~= "table" then
         return
     end
@@ -8936,6 +8999,9 @@ local function _applyServerPresenceRoster(peers)
             nametagState.serverPresent[uid] = true
             if type(entry.tier) == "string" and entry.tier ~= "" then
                 nametagState.serverTierByUserId[uid] = entry.tier
+            end
+            if type(entry.accentPrimary) == "string" and entry.accentPrimary ~= "" then
+                nametagState.serverAccentByUserId[uid] = entry.accentPrimary
             end
         end
     end
@@ -8980,6 +9046,9 @@ local function watchPlayer(player)
             hrp:GetAttributeChangedSignal("UA_Tier"):Connect(function()
                 _refreshNametags()
             end)
+            hrp:GetAttributeChangedSignal("UA_Accent"):Connect(function()
+                _refreshNametags()
+            end)
         end
         if player == LocalPlayer then _broadcastPresence() end
         if _isScriptUser(player) then
@@ -8987,7 +9056,7 @@ local function watchPlayer(player)
         end
     end)
     player.AttributeChanged:Connect(function(attr)
-        if attr == "UA_Present" or attr == "UA_Tier" then _refreshNametags() end
+        if attr == "UA_Present" or attr == "UA_Tier" or attr == "UA_Accent" then _refreshNametags() end
     end)
     if player.Character then
         if player == LocalPlayer then _broadcastPresence() end
@@ -11391,6 +11460,7 @@ local function startRemoteAdminBridge()
                         placeId = tostring(game.PlaceId),
                         gameId = tostring(game.GameId),
                         hwid = getClientHwid(),
+                        accentPrimary = encodeAccentColor(Theme.AccentPrimary),
                     })
                     if pData and type(pData.peers) == "table" and applyServerPresenceRoster then
                         uaLivePeersCache = pData.peers

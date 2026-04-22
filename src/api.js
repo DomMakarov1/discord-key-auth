@@ -159,13 +159,14 @@ export function createApi() {
     try {
       const token = extractToken(req);
       if (!token) return res.status(401).json({ ok: false, error: "token required" });
-      const { robloxUserId, robloxUsername, placeId, gameId, hwid } = req.body || {};
+      const { robloxUserId, robloxUsername, placeId, gameId, hwid, accentPrimary } = req.body || {};
       await updateScriptPresence(token, {
         robloxUserId,
         robloxUsername,
         placeId,
         gameId,
         hwid,
+        accentPrimary,
         ipAddress: getRequestIp(req),
       });
       const roster = await listOnlinePeers(token, { placeId, gameId });

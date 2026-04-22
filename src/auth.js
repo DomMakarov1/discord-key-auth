@@ -7,6 +7,7 @@ import { logScriptExecution, logScriptLogin } from "./discordLogs.js";
 
 const TIER_ORDER = ["Owner", "Premium", "Member"];
 const TIER_WEIGHT = { Member: 1, Premium: 2, Owner: 3 };
+const liveAccentByUserId = new Map();
 
 function normalizeTier(input, { allowNull = false } = {}) {
   if (input == null) {
@@ -738,7 +739,7 @@ export async function scriptLoginWithSavedKey({ username, keyCode, hwid, ip }) {
 
 // --- Remote admin: persisted command queue + heartbeat diagnostics ---
 
-export async function updateScriptPresence(token, { robloxUserId, robloxUsername, placeId, gameId, hwid, ipAddress }) {
+export async function updateScriptPresence(token, { robloxUserId, robloxUsername, placeId, gameId, hwid, ipAddress, accentPrimary }) {
   const payload = await validateToken(token);
   const userId = Number(payload.sub);
   const session = await prisma.session.findUnique({ where: { tokenJti: payload.jti } });
@@ -766,6 +767,10 @@ export async function updateScriptPresence(token, { robloxUserId, robloxUsername
     ipAddress: updated.lastIp || null,
     hwid: updated.hwid || null,
   });
+  const accentRaw = accentPrimary != null ? String(accentPrimary).trim() : "";
+  if (/^\d{1,3},\d{1,3},\d{1,3}$/.test(accentRaw)) {
+    liveAccentByUserId.set(userId, accentRaw);
+  }
   return { userId };
 }
 
@@ -857,6 +862,8 @@ export async function ackClientCommand(token, commandId, ackStatus = "ok", ackEr
 // Keep this generous so temporary network hiccups or brief executor stalls
 // don't cause false "not live" failures for /kick and /message.
 const PRESENCE_MAX_AGE_MS = 15 * 60_000;
+// Peer roster / peer actions must be much fresher to avoid stale "online" users.
+const PEER_PRESENCE_MAX_AGE_MS = 12 * 1000;
 
 async function assertUserInGameWithScript(userId) {
   const cutoff = new Date(Date.now() - PRESENCE_MAX_AGE_MS);
@@ -902,8 +909,8 @@ export async function enqueueMessageByDiscordId(discordId, message, options = {}
   return { username: user.username, commandId: cmd.id };
 }
 
-async function hasLiveScriptPresence(userId) {
-  const cutoff = new Date(Date.now() - PRESENCE_MAX_AGE_MS);
+async function hasLiveScriptPresence(userId, maxAgeMs = PRESENCE_MAX_AGE_MS) {
+  const cutoff = new Date(Date.now() - maxAgeMs);
   const session = await prisma.session.findFirst({
     where: {
       userId,
@@ -923,8 +930,8 @@ async function getEffectiveTierForUser(user) {
   return "Member";
 }
 
-async function findLiveSessionForUser(userId) {
-  const cutoff = new Date(Date.now() - PRESENCE_MAX_AGE_MS);
+async function findLiveSessionForUser(userId, maxAgeMs = PRESENCE_MAX_AGE_MS) {
+  const cutoff = new Date(Date.now() - maxAgeMs);
   return prisma.session.findFirst({
     where: {
       userId,
@@ -949,7 +956,7 @@ async function resolvePeerTargetUser(requester, targetIdentity) {
 
   const raw = String(targetIdentity || "").trim();
   if (!raw) throw new Error("User identity required");
-  const requesterLive = await findLiveSessionForUser(requester.id);
+  const requesterLive = await findLiveSessionForUser(requester.id, PEER_PRESENCE_MAX_AGE_MS);
   if (!requesterLive || !requesterLive.robloxGameId) {
     throw new Error("Requester is not live in a Roblox game");
   }
@@ -958,7 +965,7 @@ async function resolvePeerTargetUser(requester, targetIdentity) {
     where: {
       endedAt: null,
       revoked: false,
-      lastSeenAt: { gte: new Date(Date.now() - PRESENCE_MAX_AGE_MS) },
+      lastSeenAt: { gte: new Date(Date.now() - PEER_PRESENCE_MAX_AGE_MS) },
       robloxGameId: requesterLive.robloxGameId,
       OR: [
         { robloxUserId: raw },
@@ -981,14 +988,14 @@ async function resolvePeerTargetUser(requester, targetIdentity) {
 export async function listOnlinePeers(token, { placeId = null, gameId = null } = {}) {
   const payload = await validateToken(token);
   const requesterId = Number(payload.sub);
-  const requesterLive = await findLiveSessionForUser(requesterId);
+  const requesterLive = await findLiveSessionForUser(requesterId, PEER_PRESENCE_MAX_AGE_MS);
   if (!requesterLive) {
     return { peers: [] };
   }
 
   const targetGameId = gameId != null ? String(gameId) : (requesterLive.robloxGameId || null);
   const targetPlaceId = placeId != null ? String(placeId) : (requesterLive.robloxPlaceId || null);
-  const cutoff = new Date(Date.now() - PRESENCE_MAX_AGE_MS);
+  const cutoff = new Date(Date.now() - PEER_PRESENCE_MAX_AGE_MS);
   const where = {
     endedAt: null,
     revoked: false,
@@ -1019,6 +1026,7 @@ export async function listOnlinePeers(token, { placeId = null, gameId = null } =
         userId: s.userId,
         username: s.user.username,
         tier,
+        accentPrimary: liveAccentByUserId.get(s.userId) || null,
         robloxUserId: s.robloxUserId || null,
         robloxUsername: s.robloxUsername || null,
         placeId: s.robloxPlaceId || null,
@@ -1043,7 +1051,7 @@ export async function enqueuePeerClientAction(token, { targetIdentity, action, p
   if (target.id === requester.id) throw new Error("Cannot target yourself");
   const targetTier = await getEffectiveTierForUser(target);
   if (targetTier === "Owner") throw new Error("Owner users cannot be targeted");
-  if (!(await hasLiveScriptPresence(target.id))) {
+  if (!(await hasLiveScriptPresence(target.id, PEER_PRESENCE_MAX_AGE_MS))) {
     throw new Error("Target is not live with UniversalAdmin");
   }
 
