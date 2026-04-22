@@ -116,8 +116,8 @@ export function createApi() {
   app.post("/auth/script-login-key", async (req, res) => {
     try {
       const { username, key, hwid } = req.body || {};
-      if (!username || !key) {
-        return res.status(400).json({ ok: false, error: "username and key required" });
+      if (!username) {
+        return res.status(400).json({ ok: false, error: "username required" });
       }
       const result = await scriptLoginWithSavedKey({
         username,

@@ -4203,18 +4203,7 @@ peerOps.pkillField = { enabled = false, radius = 4, thread = nil, lastKillAt = {
 peerOps.isAdminScriptUser = function(player)
     if not player or player == LocalPlayer then return false end
     local uid = player.UserId
-    local tier = nil
-    if nametagState and nametagState.serverTierByUserId then
-        tier = nametagState.serverTierByUserId[uid]
-    end
-    if type(tier) ~= "string" or tier == "" then
-        local ok, attr = pcall(function() return player:GetAttribute("UA_Tier") end)
-        if ok then tier = attr end
-    end
-    local norm = normalizeTierString(tier)
-    if norm ~= "Premium" and norm ~= "Owner" then
-        return false
-    end
+    -- Kill field targets any user currently running UA, regardless of tier.
     if nametagState and nametagState.serverPresent and nametagState.serverPresent[uid] then
         return true
     end
@@ -4224,6 +4213,10 @@ end
 
 peerOps.startPKillField = function()
     if peerOps.pkillField.enabled then return end
+    if type(requestPeerActionFn) ~= "function" then
+        notify("Peer actions unavailable (wait for login bridge)", "warning", 2)
+        return
+    end
     peerOps.pkillField.enabled = true
     if type(setToggleState) == "function" then
         setToggleState("pkillfield", true)
@@ -4257,7 +4250,9 @@ end
 peerOps.stopPKillField = function()
     peerOps.pkillField.enabled = false
     if type(setToggleState) == "function" then
-        setToggleState("pkillfield", false)
+        if type(setToggleState) == "function" then
+            setToggleState("pkillfield", false)
+        end
     end
     peerOps.pkillField.thread = nil
 end
@@ -11706,9 +11701,6 @@ local function refreshAuthTokenViaSavedKey()
     if type(persistedConfig.loginUser) ~= "string" or persistedConfig.loginUser == "" then
         return false
     end
-    if type(persistedConfig.loginKey) ~= "string" or persistedConfig.loginKey == "" then
-        return false
-    end
     local data, err, banCode = postJsonAuth(AUTH_API_BASE .. "/auth/script-login-key", {
         username = persistedConfig.loginUser,
         key = persistedConfig.loginKey,
@@ -12503,16 +12495,6 @@ local function loginRunAuthRequest(L, onSuccess, user, pass)
     if type(authResult.token) == "string" and authResult.token ~= "" then
         persistedConfig.authToken = authResult.token
     end
-    if persistedConfig.loginKey == "" then
-        clearSavedLogin()
-        L.submitted = false
-        L.submitBtn.Text = "LOGIN"
-        L.userBox.TextEditable = true
-        L.passBox.TextEditable = true
-        L.errLabel.TextColor3 = Theme.Error
-        L.errLabel.Text = "No affiliated active key found"
-        return
-    end
     savePersistedConfig()
     pcall(function()
         if broadcastPresence then broadcastPresence() end
@@ -12796,9 +12778,7 @@ end
 -- Decide: show full login or "welcome back" depending on saved state.
 local function _uaRunLoginFlow()
     startUpdateWatcher()
-    if persistedConfig.loginUser and persistedConfig.loginKey
-        and type(persistedConfig.loginUser) == "string" and #persistedConfig.loginUser > 0
-        and type(persistedConfig.loginKey) == "string" and #persistedConfig.loginKey > 0 then
+    if type(persistedConfig.loginUser) == "string" and #persistedConfig.loginUser > 0 then
         local okSaved = false
         pcall(function()
             local data, err, banCode = postJsonAuth(AUTH_API_BASE .. "/auth/script-login-key", {

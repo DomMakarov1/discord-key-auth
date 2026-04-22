@@ -60,7 +60,6 @@ const commands = [
         .setDescription("Key tier")
         .setRequired(true)
         .addChoices(
-          { name: "Member", value: "Member" },
           { name: "Premium", value: "Premium" },
           { name: "Owner", value: "Owner" }
         )
@@ -164,7 +163,6 @@ const commands = [
         .setDescription("Key tier")
         .setRequired(true)
         .addChoices(
-          { name: "Member", value: "Member" },
           { name: "Premium", value: "Premium" },
           { name: "Owner", value: "Owner" }
         )

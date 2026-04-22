@@ -7,7 +7,12 @@ import { logScriptExecution, logScriptLogin } from "./discordLogs.js";
 
 const TIER_ORDER = ["Owner", "Premium", "Member"];
 const TIER_WEIGHT = { Member: 1, Premium: 2, Owner: 3 };
+const KEY_TIERS = ["Premium", "Owner"];
 const liveAccentByUserId = new Map();
+const USERNAME_MAX_LEN = 29; // strictly less than 30
+const PASSWORD_MIN_LEN = 8;
+const PASSWORD_MAX_LEN = 29; // strictly less than 30
+const ASCII_KEYBOARD_RE = /^[\x21-\x7E]+$/;
 
 function normalizeTier(input, { allowNull = false } = {}) {
   if (input == null) {
@@ -22,6 +27,25 @@ function normalizeTier(input, { allowNull = false } = {}) {
   throw new Error("Invalid tier. Use Member, Premium, or Owner");
 }
 
+function validateUsernameInput(username) {
+  const raw = String(username || "");
+  if (!raw) throw new Error("Username is required");
+  if (raw.length > USERNAME_MAX_LEN) throw new Error("Username must be less than 30 characters");
+  if (!ASCII_KEYBOARD_RE.test(raw)) {
+    throw new Error("Username may only use standard keyboard characters (roman letters, numbers, punctuation)");
+  }
+}
+
+function validatePasswordInput(password) {
+  const raw = String(password || "");
+  if (!raw) throw new Error("Password is required");
+  if (raw.length < PASSWORD_MIN_LEN) throw new Error("Password must be at least 8 characters");
+  if (raw.length > PASSWORD_MAX_LEN) throw new Error("Password must be less than 30 characters");
+  if (!ASCII_KEYBOARD_RE.test(raw)) {
+    throw new Error("Password may only use standard keyboard characters (roman letters, numbers, punctuation)");
+  }
+}
+
 async function getBestActiveLicense(userId) {
   const now = new Date();
   const licenses = await prisma.license.findMany({
@@ -29,7 +53,7 @@ async function getBestActiveLicense(userId) {
       userId,
       active: true,
       expiresAt: { gt: now },
-      tier: { in: TIER_ORDER },
+      tier: { in: KEY_TIERS },
     },
     orderBy: { expiresAt: "desc" },
   });
@@ -282,6 +306,8 @@ export async function banFromUserLatestSession(identity, { reason, createdByDisc
 }
 
 export async function registerUser({ username, password, discordId }) {
+  validateUsernameInput(username);
+  validatePasswordInput(password);
   const exists = await prisma.user.findUnique({ where: { username } });
   if (exists) throw new Error("Username already exists");
   const passwordHash = await bcrypt.hash(password, 12);
@@ -291,6 +317,8 @@ export async function registerUser({ username, password, discordId }) {
 }
 
 export async function loginUser({ username, password }) {
+  validateUsernameInput(username);
+  validatePasswordInput(password);
   const user = await prisma.user.findUnique({ where: { username } });
   if (!user) throw new Error("Invalid credentials");
   if (await isUserBlacklistedNow(user)) throw new Error("User is blacklisted");
@@ -298,7 +326,6 @@ export async function loginUser({ username, password }) {
   if (!ok) throw new Error("Invalid credentials");
 
   const activeLicense = await getBestActiveLicense(user.id);
-  if (!activeLicense) throw new Error("No active license");
 
   const jti = nanoid(24);
   const session = await prisma.session.create({
@@ -310,14 +337,14 @@ export async function loginUser({ username, password }) {
     },
   });
 
-  const effectiveTier = maxTier(activeLicense.tier, user.rank || "Member");
+  const effectiveTier = maxTier((activeLicense && activeLicense.tier) || "Member", user.rank || "Member");
   const token = jwt.sign(
     { sub: user.id, username: user.username, tier: effectiveTier, jti },
     config.jwtSecret,
     { expiresIn: "1h" }
   );
 
-  return { token, tier: effectiveTier, expiresAt: activeLicense.expiresAt, sessionId: session.id };
+  return { token, tier: effectiveTier, expiresAt: activeLicense ? activeLicense.expiresAt : null, sessionId: session.id };
 }
 
 export function verifyToken(token) {
@@ -340,8 +367,9 @@ export async function validateToken(token) {
   return payload;
 }
 
-export async function issueKey({ tier = "Member", durationDays = 30 }) {
+export async function issueKey({ tier = "Premium", durationDays = 30 }) {
   const normTier = normalizeTier(tier);
+  if (normTier === "Member") throw new Error("Member keys are disabled. Use account-only login for standard users.");
   const code = `${normTier.toUpperCase()}-${nanoid(20)}`;
   return prisma.key.create({
     data: { code, tier: normTier, durationDays },
@@ -358,6 +386,7 @@ export async function redeemKey({ username, discordId, code }) {
   const key = await prisma.key.findUnique({ where: { code } });
   if (!key) throw new Error("Invalid key");
   if (key.redeemedAt) throw new Error("Key already redeemed");
+  if (key.tier === "Member") throw new Error("Member keys are disabled");
   if (key.tier === "Owner" && !config.adminDiscordIds.includes(String(user.discordId || ""))) {
     throw new Error("Owner keys can only be redeemed by owner accounts");
   }
@@ -569,8 +598,9 @@ export async function logoutAllSessions(identity) {
   });
 }
 
-export async function issueBulk(days, count, tierInput = "Member") {
+export async function issueBulk(days, count, tierInput = "Premium") {
   const tier = normalizeTier(tierInput);
+  if (tier === "Member") throw new Error("Member keys are disabled");
   const toCreate = [];
   for (let i = 0; i < count; i += 1) {
     toCreate.push({
@@ -616,6 +646,8 @@ export async function deleteAccount(username) {
 }
 
 export async function scriptLoginWithPassword({ username, password, hwid, ip }) {
+  validateUsernameInput(username);
+  validatePasswordInput(password);
   const h = normalizeClientHwid(hwid);
   const p = normalizeClientIp(ip);
   await assertNotAccessBanned({ hwid: h, ip: p });
@@ -635,22 +667,13 @@ export async function scriptLoginWithPassword({ username, password, hwid, ip }) 
 
   const now = new Date();
   const activeLicense = await getBestActiveLicense(user.id);
-  if (!activeLicense) {
-    await recordHwidLoginFailure(h);
-    throw new Error("No active key/license");
-  }
-
   const key = await prisma.key.findFirst({
     where: {
-      tier: activeLicense.tier,
+      tier: { in: KEY_TIERS },
       OR: [{ assignedToId: user.id }, { redeemedById: user.id }],
     },
     orderBy: [{ redeemedAt: "desc" }, { createdAt: "desc" }],
   });
-  if (!key) {
-    await recordHwidLoginFailure(h);
-    throw new Error("No affiliated key found");
-  }
 
   const jti = nanoid(24);
   await prisma.session.create({
@@ -662,7 +685,7 @@ export async function scriptLoginWithPassword({ username, password, hwid, ip }) 
     },
   });
 
-  const effectiveTier = maxTier(activeLicense.tier, user.rank || "Member");
+  const effectiveTier = maxTier((activeLicense && activeLicense.tier) || "Member", user.rank || "Member");
   const token = jwt.sign(
     { sub: user.id, username: user.username, tier: effectiveTier, jti },
     config.jwtSecret,
@@ -671,7 +694,7 @@ export async function scriptLoginWithPassword({ username, password, hwid, ip }) 
   await logScriptLogin(config, { username: user.username, tier: effectiveTier, jti }, {
     method: "password",
     discordId: user.discordId || null,
-    keyCode: key.code,
+    keyCode: key ? key.code : null,
   });
 
   await clearHwidLoginOnSuccess(h);
@@ -679,12 +702,13 @@ export async function scriptLoginWithPassword({ username, password, hwid, ip }) 
   return {
     token,
     tier: effectiveTier,
-    expiresAt: activeLicense.expiresAt,
-    key: key.code,
+    expiresAt: activeLicense ? activeLicense.expiresAt : null,
+    key: key ? key.code : null,
   };
 }
 
 export async function scriptLoginWithSavedKey({ username, keyCode, hwid, ip }) {
+  validateUsernameInput(username);
   const h = normalizeClientHwid(hwid);
   const p = normalizeClientIp(ip);
   await assertNotAccessBanned({ hwid: h, ip: p });
@@ -697,32 +721,36 @@ export async function scriptLoginWithSavedKey({ username, keyCode, hwid, ip }) {
   }
   if (await isUserBlacklistedNow(user)) throw new Error("Account blacklisted");
 
-  const key = await prisma.key.findUnique({ where: { code: keyCode } });
-  if (!key) {
-    await recordHwidLoginFailure(h);
-    throw new Error("Invalid key");
-  }
-  const affiliated =
-    (key.assignedToId && key.assignedToId === user.id) ||
-    (key.redeemedById && key.redeemedById === user.id);
-  if (!affiliated) {
-    await recordHwidLoginFailure(h);
-    throw new Error("Key not affiliated");
+  let key = null;
+  const hasProvidedKey = typeof keyCode === "string" && keyCode.trim() !== "";
+  if (hasProvidedKey) {
+    key = await prisma.key.findUnique({ where: { code: keyCode } });
+    if (!key) {
+      await recordHwidLoginFailure(h);
+      throw new Error("Invalid key");
+    }
+    if (key.tier === "Member") {
+      await recordHwidLoginFailure(h);
+      throw new Error("Member keys are disabled");
+    }
+    const affiliated =
+      (key.assignedToId && key.assignedToId === user.id) ||
+      (key.redeemedById && key.redeemedById === user.id);
+    if (!affiliated) {
+      await recordHwidLoginFailure(h);
+      throw new Error("Key not affiliated");
+    }
   }
 
   const now = new Date();
   const activeLicense = await getBestActiveLicense(user.id);
-  if (!activeLicense) {
-    await recordHwidLoginFailure(h);
-    throw new Error("No active key/license");
-  }
 
   const jti = nanoid(24);
   await prisma.session.create({
     data: { userId: user.id, tokenJti: jti, startedAt: now, lastSeenAt: now },
   });
 
-  const effectiveTier = maxTier(activeLicense.tier, user.rank || "Member");
+  const effectiveTier = maxTier((activeLicense && activeLicense.tier) || "Member", user.rank || "Member");
   const token = jwt.sign(
     { sub: user.id, username: user.username, tier: effectiveTier, jti },
     config.jwtSecret,
@@ -731,10 +759,10 @@ export async function scriptLoginWithSavedKey({ username, keyCode, hwid, ip }) {
   await logScriptLogin(config, { username: user.username, tier: effectiveTier, jti }, {
     method: "saved_key",
     discordId: user.discordId || null,
-    keyCode,
+    keyCode: key ? key.code : null,
   });
   await clearHwidLoginOnSuccess(h);
-  return { token, tier: effectiveTier, expiresAt: activeLicense.expiresAt, key: key.code };
+  return { token, tier: effectiveTier, expiresAt: activeLicense ? activeLicense.expiresAt : null, key: key ? key.code : null };
 }
 
 // --- Remote admin: persisted command queue + heartbeat diagnostics ---
@@ -1037,8 +1065,9 @@ export async function listOnlinePeers(token, { placeId = null, gameId = null } =
     return { peers: [] };
   }
 
-  const targetGameId = gameId != null ? String(gameId) : (requesterLive.robloxGameId || null);
-  const targetPlaceId = placeId != null ? String(placeId) : (requesterLive.robloxPlaceId || null);
+  // Global roster by default. Only scope when caller explicitly passes placeId/gameId.
+  const targetGameId = gameId != null ? String(gameId) : null;
+  const targetPlaceId = placeId != null ? String(placeId) : null;
   const cutoff = new Date(Date.now() - PEER_PRESENCE_MAX_AGE_MS);
   const where = {
     endedAt: null,
