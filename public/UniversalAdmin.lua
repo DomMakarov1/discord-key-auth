@@ -70,6 +70,12 @@ local SoundService   = game:GetService("SoundService")
 local TeleportService = game:GetService("TeleportService")
 
 local LocalPlayer = Players.LocalPlayer
+local UA_RUNTIME = rawget(_G, "UA_RUNTIME")
+if type(UA_RUNTIME) ~= "table" then
+    UA_RUNTIME = {}
+    _G.UA_RUNTIME = UA_RUNTIME
+end
+UA_RUNTIME.active = true
 
 -- UTILITY
 -------------------------------------------------
@@ -877,6 +883,9 @@ local function executeCommand(input)
     if cmd then
         if cmd.Premium and not hasTierAtLeast("Premium") then
             return false, "Premium required - purchase on Discord"
+        end
+        if cmd.Custom and cmd.Disabled then
+            return false, "Custom command is disabled (enable it in ;settings)"
         end
         local normalizedInput = tostring(input or "")
         if normalizedInput ~= "" then
@@ -4916,6 +4925,13 @@ local function applyAccentColor(primary, secondary)
     -- Recolor known UIGradients in the UI
     for _, d in ipairs(ScreenGui:GetDescendants()) do
         if d:IsA("UIGradient") then
+            local parentName = d.Parent and d.Parent.Name or ""
+            if parentName == "HueBar" or parentName == "SatOverlay" or parentName == "ValOverlay" then
+                continue
+            end
+            if d.Name == "SettingsSwatchGradient" or d.Name == "HueGradient" or d.Name == "SatOverlayGradient" or d.Name == "ValOverlayGradient" then
+                continue
+            end
             local seq = d.Color
             local keys = seq.Keypoints
             if #keys >= 2 then
@@ -4946,135 +4962,11 @@ settingsPanel = createToolPanel({
     Name = "SettingsPanel",
     Title = "Settings",
     Icon = "#",
-    Width = 320,
-    Height = 440,
-    Position = UDim2.new(0.5, -160, 0.5, -220),
+    Width = 680,
+    Height = 520,
+    Position = UDim2.new(0.5, -340, 0.5, -260),
 })
 
-local _settingsY = 4
-
-createLabel("PREFIX", settingsPanel.Content, UDim2.new(0, 0, 0, _settingsY))
-_settingsY = _settingsY + 16
-local prefixInput = createTextInput(settingsPanel.Content, UDim2.new(0, 0, 0, _settingsY), "e.g. ;", CONFIG.Prefix)
-prefixInput.Box.FocusLost:Connect(function()
-    local newPrefix = prefixInput.GetText()
-    if #newPrefix < 1 or #newPrefix > 3 then
-        notify("Prefix must be 1-3 characters", "error", 2)
-        prefixInput.SetText(CONFIG.Prefix)
-        return
-    end
-    CONFIG.Prefix = newPrefix
-    persistedConfig.prefix = newPrefix
-    savePersistedConfig()
-    notify("Prefix changed to '" .. newPrefix .. "'", "success", 2)
-end)
-_settingsY = _settingsY + 40
-
-createLabel("NICKNAME", settingsPanel.Content, UDim2.new(0, 0, 0, _settingsY))
-_settingsY = _settingsY + 16
-local nickInput = createTextInput(settingsPanel.Content, UDim2.new(0, 0, 0, _settingsY), LocalPlayer.DisplayName, PlayerNameLabel.Text)
-nickInput.Box.FocusLost:Connect(function()
-    local n = nickInput.GetText()
-    if #n == 0 then
-        nickInput.SetText(PlayerNameLabel.Text)
-        return
-    end
-    PlayerNameLabel.Text = n
-    persistedConfig.nickname = n
-    savePersistedConfig()
-    notify("Nickname updated", "success", 2)
-end)
-_settingsY = _settingsY + 40
-
-createLabel("ACCENT COLOR", settingsPanel.Content, UDim2.new(0, 0, 0, _settingsY))
-_settingsY = _settingsY + 16
-local swatchesFrame = create("Frame", {
-    Size = UDim2.new(1, 0, 0, 28),
-    Position = UDim2.new(0, 0, 0, _settingsY),
-    BackgroundTransparency = 1,
-    Parent = settingsPanel.Content,
-}, {
-    create("UIListLayout", {
-        FillDirection = Enum.FillDirection.Horizontal,
-        Padding = UDim.new(0, 6),
-        SortOrder = Enum.SortOrder.LayoutOrder,
-    }),
-})
-
-local swatchColors = {
-    { Color3.fromRGB(99, 102, 241),  Color3.fromRGB(139, 92, 246)  }, -- indigo/purple
-    { Color3.fromRGB(239, 68, 68),   Color3.fromRGB(251, 146, 60)  }, -- red/orange
-    { Color3.fromRGB(34, 197, 94),   Color3.fromRGB(16, 185, 129)  }, -- green
-    { Color3.fromRGB(59, 130, 246),  Color3.fromRGB(14, 165, 233)  }, -- blue/cyan
-    { Color3.fromRGB(236, 72, 153),  Color3.fromRGB(244, 114, 182) }, -- pink
-    { Color3.fromRGB(250, 204, 21),  Color3.fromRGB(251, 191, 36)  }, -- yellow
-    { Color3.fromRGB(156, 163, 175), Color3.fromRGB(209, 213, 219) }, -- gray
-}
-for i, pair in ipairs(swatchColors) do
-    local sw = create("TextButton", {
-        Size = UDim2.new(0, 28, 0, 28),
-        BackgroundColor3 = pair[1],
-        BorderSizePixel = 0,
-        AutoButtonColor = false,
-        Text = "",
-        LayoutOrder = i,
-        Parent = swatchesFrame,
-    }, {
-        create("UICorner", { CornerRadius = UDim.new(0, 6) }),
-        create("UIGradient", {
-            Color = ColorSequence.new({
-                ColorSequenceKeypoint.new(0, pair[1]),
-                ColorSequenceKeypoint.new(1, pair[2]),
-            }),
-            Rotation = 45,
-        }),
-    })
-    sw.MouseButton1Click:Connect(function()
-        playClickSound()
-        applyAccentColor(pair[1], pair[2])
-        persistedConfig.accentPrimary = {
-            r = math.floor(pair[1].R * 255 + 0.5),
-            g = math.floor(pair[1].G * 255 + 0.5),
-            b = math.floor(pair[1].B * 255 + 0.5),
-        }
-        persistedConfig.accentSecondary = {
-            r = math.floor(pair[2].R * 255 + 0.5),
-            g = math.floor(pair[2].G * 255 + 0.5),
-            b = math.floor(pair[2].B * 255 + 0.5),
-        }
-        savePersistedConfig()
-        notify("Accent color updated", "success", 2)
-    end)
-end
-_settingsY = _settingsY + 40
-
-createLabel("CUSTOM COMMAND", settingsPanel.Content, UDim2.new(0, 0, 0, _settingsY))
-_settingsY = _settingsY + 16
-local cmdNameInput = createTextInput(settingsPanel.Content, UDim2.new(0, 0, 0, _settingsY), "name (e.g. hello)", "")
-_settingsY = _settingsY + 36
-local cmdSrcInput = createTextInput(settingsPanel.Content, UDim2.new(0, 0, 0, _settingsY), "lua body (e.g. notify('hi'))", "")
-_settingsY = _settingsY + 36
-
-local addCmdBtn = create("TextButton", {
-    Size = UDim2.new(1, 0, 0, 30),
-    Position = UDim2.new(0, 0, 0, _settingsY),
-    BackgroundColor3 = Theme.AccentPrimary,
-    BackgroundTransparency = 0.4,
-    BorderSizePixel = 0,
-    AutoButtonColor = false,
-    Text = "ADD CUSTOM COMMAND",
-    TextColor3 = Theme.Text,
-    TextSize = 12,
-    Font = Theme.FontBold,
-    Parent = settingsPanel.Content,
-}, {
-    create("UICorner", { CornerRadius = UDim.new(0, 6) }),
-    create("UIStroke", {
-        Color = Theme.AccentPrimary,
-        Thickness = 1,
-        Transparency = 0.3,
-    }),
-})
 local function registerCustomCommand(cname, csrc)
     local fn, err = loadstring("return function(args) " .. csrc .. " end")
     if not fn then return false, tostring(err) end
@@ -5094,18 +4986,521 @@ local function registerCustomCommand(cname, csrc)
     return true
 end
 
--- Replay any persisted custom commands from disk
-if type(persistedConfig.customCommands) == "table" then
-    for _, entry in ipairs(persistedConfig.customCommands) do
-        if type(entry) == "table" and type(entry.name) == "string" and type(entry.source) == "string" then
-            if not Commands[entry.name] then
-                pcall(registerCustomCommand, entry.name, entry.source)
-            end
+local settingsRoot = create("Frame", {
+    Size = UDim2.new(1, 0, 1, 0),
+    BackgroundTransparency = 1,
+    Parent = settingsPanel.Content,
+})
+local leftCol = create("Frame", {
+    Size = UDim2.new(0, 300, 1, 0),
+    Position = UDim2.new(0, 0, 0, 0),
+    BackgroundTransparency = 1,
+    Parent = settingsRoot,
+})
+local rightCol = create("Frame", {
+    Size = UDim2.new(1, -316, 1, 0),
+    Position = UDim2.new(0, 316, 0, 0),
+    BackgroundTransparency = 1,
+    Parent = settingsRoot,
+})
+local function createSection(parent, title, pos, size)
+    local section = create("Frame", {
+        Size = size,
+        Position = pos,
+        BackgroundColor3 = Theme.Surface,
+        BackgroundTransparency = 0.18,
+        BorderSizePixel = 0,
+        Parent = parent,
+    }, {
+        create("UICorner", { CornerRadius = UDim.new(0, 8) }),
+        create("UIStroke", { Color = Theme.Border, Thickness = 1, Transparency = 0.4 }),
+    })
+    create("TextLabel", {
+        Size = UDim2.new(1, -16, 0, 16),
+        Position = UDim2.new(0, 8, 0, 8),
+        BackgroundTransparency = 1,
+        Text = title,
+        TextColor3 = Theme.TextMuted,
+        TextSize = 10,
+        Font = Theme.FontBold,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Parent = section,
+    })
+    return section
+end
+
+local profileSection = createSection(leftCol, "PROFILE", UDim2.new(0, 0, 0, 0), UDim2.new(1, 0, 0, 128))
+createLabel("PREFIX", profileSection, UDim2.new(0, 10, 0, 28))
+local prefixInput = createTextInput(profileSection, UDim2.new(0, 10, 0, 44), "e.g. ;", CONFIG.Prefix)
+prefixInput.Container.Size = UDim2.new(1, -20, 0, 30)
+prefixInput.Box.FocusLost:Connect(function()
+    local newPrefix = prefixInput.GetText()
+    if #newPrefix < 1 or #newPrefix > 3 then
+        notify("Prefix must be 1-3 characters", "error", 2)
+        prefixInput.SetText(CONFIG.Prefix)
+        return
+    end
+    CONFIG.Prefix = newPrefix
+    persistedConfig.prefix = newPrefix
+    savePersistedConfig()
+    notify("Prefix changed to '" .. newPrefix .. "'", "success", 2)
+end)
+createLabel("NICKNAME", profileSection, UDim2.new(0, 10, 0, 78))
+local nickInput = createTextInput(profileSection, UDim2.new(0, 10, 0, 94), LocalPlayer.DisplayName, PlayerNameLabel.Text)
+nickInput.Container.Size = UDim2.new(1, -20, 0, 30)
+nickInput.Box.FocusLost:Connect(function()
+    local n = nickInput.GetText()
+    if #n == 0 then
+        nickInput.SetText(PlayerNameLabel.Text)
+        return
+    end
+    PlayerNameLabel.Text = n
+    persistedConfig.nickname = n
+    savePersistedConfig()
+    notify("Nickname updated", "success", 2)
+end)
+
+local refreshAccentUi, refreshCustomList
+(function()
+local accentSection = createSection(leftCol, "ACCENT PICKER", UDim2.new(0, 0, 0, 140), UDim2.new(1, 0, 0, 330))
+local hueBar = create("Frame", {
+    Name = "HueBar",
+    Size = UDim2.new(1, -20, 0, 22),
+    Position = UDim2.new(0, 10, 0, 34),
+    BackgroundColor3 = Color3.fromRGB(255, 0, 0),
+    BorderSizePixel = 0,
+    Parent = accentSection,
+}, {
+    create("UICorner", { CornerRadius = UDim.new(0, 6) }),
+})
+do
+    local slices = 96
+    for i = 0, (slices - 1) do
+        local h = i / (slices - 1)
+        create("Frame", {
+            Name = "HueSeg" .. tostring(i + 1),
+            Size = UDim2.new(1 / slices, 1, 1, 0),
+            Position = UDim2.new(i / slices, 0, 0, 0),
+            BackgroundColor3 = Color3.fromHSV(h, 1, 1),
+            BorderSizePixel = 0,
+            Parent = hueBar,
+        })
+    end
+end
+local hueKnob = create("Frame", {
+    Size = UDim2.new(0, 8, 1, 6),
+    AnchorPoint = Vector2.new(0.5, 0.5),
+    Position = UDim2.new(0, 4, 0.5, 0),
+    BackgroundColor3 = Theme.Text,
+    BorderSizePixel = 0,
+    Parent = hueBar,
+}, {
+    create("UICorner", { CornerRadius = UDim.new(1, 0) }),
+})
+local satValBox = create("Frame", {
+    Size = UDim2.new(1, -20, 0, 170),
+    Position = UDim2.new(0, 10, 0, 68),
+    BackgroundColor3 = Color3.fromHSV(0, 1, 1),
+    BorderSizePixel = 0,
+    Parent = accentSection,
+}, {
+    create("UICorner", { CornerRadius = UDim.new(0, 6) }),
+})
+local satOverlay = create("Frame", {
+    Name = "SatOverlay",
+    Size = UDim2.new(1, 0, 1, 0),
+    BackgroundColor3 = Color3.new(1, 1, 1),
+    BorderSizePixel = 0,
+    Parent = satValBox,
+}, {
+    create("UICorner", { CornerRadius = UDim.new(0, 6) }),
+    create("UIGradient", {
+        Name = "SatOverlayGradient",
+        Color = ColorSequence.new({
+            ColorSequenceKeypoint.new(0, Color3.new(1, 1, 1)),
+            ColorSequenceKeypoint.new(1, Color3.new(1, 1, 1)),
+        }),
+        Transparency = NumberSequence.new({
+            NumberSequenceKeypoint.new(0, 0),
+            NumberSequenceKeypoint.new(1, 1),
+        }),
+        Rotation = 0,
+    }),
+})
+local valOverlay = create("Frame", {
+    Name = "ValOverlay",
+    Size = UDim2.new(1, 0, 1, 0),
+    BackgroundColor3 = Color3.new(0, 0, 0),
+    BorderSizePixel = 0,
+    Parent = satValBox,
+}, {
+    create("UICorner", { CornerRadius = UDim.new(0, 6) }),
+    create("UIGradient", {
+        Name = "ValOverlayGradient",
+        Color = ColorSequence.new({
+            ColorSequenceKeypoint.new(0, Color3.new(1, 1, 1)),
+            ColorSequenceKeypoint.new(1, Color3.new(1, 1, 1)),
+        }),
+        Transparency = NumberSequence.new({
+            NumberSequenceKeypoint.new(0, 1),
+            NumberSequenceKeypoint.new(1, 0),
+        }),
+        Rotation = 90,
+    }),
+})
+local svKnob = create("Frame", {
+    Size = UDim2.new(0, 10, 0, 10),
+    AnchorPoint = Vector2.new(0.5, 0.5),
+    Position = UDim2.new(1, -5, 0, 5),
+    BackgroundColor3 = Theme.Text,
+    BorderSizePixel = 0,
+    Parent = satValBox,
+}, {
+    create("UICorner", { CornerRadius = UDim.new(1, 0) }),
+})
+local preview = create("Frame", {
+    Size = UDim2.new(1, -20, 0, 38),
+    Position = UDim2.new(0, 10, 0, 248),
+    BackgroundColor3 = Theme.AccentPrimary,
+    BorderSizePixel = 0,
+    Parent = accentSection,
+}, {
+    create("UICorner", { CornerRadius = UDim.new(0, 6) }),
+    create("UIGradient", {
+        Name = "SettingsSwatchGradient",
+        Color = ColorSequence.new({
+            ColorSequenceKeypoint.new(0, Theme.AccentPrimary),
+            ColorSequenceKeypoint.new(1, Theme.AccentSecondary),
+        }),
+        Rotation = 0,
+    }),
+    create("UIStroke", { Color = Theme.Border, Thickness = 1, Transparency = 0.3 }),
+})
+create("TextLabel", {
+    Size = UDim2.new(1, 0, 1, 0),
+    BackgroundTransparency = 1,
+    Text = "Preview",
+    TextColor3 = Theme.Text,
+    TextSize = 12,
+    Font = Theme.FontBold,
+    Parent = preview,
+})
+
+local editingName = nil
+local customListFrame
+local cmdNameInput
+local cmdSrcInput
+local saveCmdBtn
+local cancelEditBtn
+
+local function persistAccent(primary, secondary)
+    persistedConfig.accentPrimary = {
+        r = math.floor(primary.R * 255 + 0.5),
+        g = math.floor(primary.G * 255 + 0.5),
+        b = math.floor(primary.B * 255 + 0.5),
+    }
+    persistedConfig.accentSecondary = {
+        r = math.floor(secondary.R * 255 + 0.5),
+        g = math.floor(secondary.G * 255 + 0.5),
+        b = math.floor(secondary.B * 255 + 0.5),
+    }
+    savePersistedConfig()
+end
+
+local hue, sat, val = 0, 1, 1
+refreshAccentUi = function()
+    satValBox.BackgroundColor3 = Color3.fromHSV(hue, 1, 1)
+    hueKnob.Position = UDim2.new(hue, 0, 0.5, 0)
+    svKnob.Position = UDim2.new(sat, 0, 1 - val, 0)
+    local primary = Color3.fromHSV(hue, sat, val)
+    local secondary = Color3.fromHSV((hue + 0.07) % 1, math.clamp(sat * 0.85 + 0.1, 0, 1), math.clamp(val * 0.85 + 0.1, 0, 1))
+    local grad = preview:FindFirstChild("SettingsSwatchGradient")
+    if grad and grad:IsA("UIGradient") then
+        grad.Color = ColorSequence.new({
+            ColorSequenceKeypoint.new(0, primary),
+            ColorSequenceKeypoint.new(1, secondary),
+        })
+    end
+end
+local function commitAccent()
+    local primary = Color3.fromHSV(hue, sat, val)
+    local secondary = Color3.fromHSV((hue + 0.07) % 1, math.clamp(sat * 0.85 + 0.1, 0, 1), math.clamp(val * 0.85 + 0.1, 0, 1))
+    applyAccentColor(primary, secondary)
+    persistAccent(primary, secondary)
+    -- Ensure picker visuals stay fixed after global accent recolor pass.
+    refreshAccentUi()
+end
+do
+    local h, s, v = Theme.AccentPrimary:ToHSV()
+    hue, sat, val = h, s, v
+    refreshAccentUi()
+end
+local draggingHue, draggingSV = false, false
+local function setHueFromX(x)
+    local rel = math.clamp((x - hueBar.AbsolutePosition.X) / math.max(hueBar.AbsoluteSize.X, 1), 0, 1)
+    hue = rel
+    refreshAccentUi()
+end
+local function setSvFromPoint(x, y)
+    local rx = math.clamp((x - satValBox.AbsolutePosition.X) / math.max(satValBox.AbsoluteSize.X, 1), 0, 1)
+    local ry = math.clamp((y - satValBox.AbsolutePosition.Y) / math.max(satValBox.AbsoluteSize.Y, 1), 0, 1)
+    sat = rx
+    val = 1 - ry
+    refreshAccentUi()
+end
+hueBar.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        draggingHue = true
+        setHueFromX(input.Position.X)
+    end
+end)
+satValBox.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        draggingSV = true
+        setSvFromPoint(input.Position.X, input.Position.Y)
+    end
+end)
+UserInputService.InputChanged:Connect(function(input)
+    if input.UserInputType ~= Enum.UserInputType.MouseMovement then return end
+    if draggingHue then
+        setHueFromX(input.Position.X)
+    end
+    if draggingSV then
+        setSvFromPoint(input.Position.X, input.Position.Y)
+    end
+end)
+UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
+    local hadDrag = draggingHue or draggingSV
+    draggingHue = false
+    draggingSV = false
+    if hadDrag then
+        commitAccent()
+        notify("Accent color updated", "success", 2)
+    end
+end)
+
+if type(persistedConfig.customCommands) ~= "table" then
+    persistedConfig.customCommands = {}
+end
+for _, entry in ipairs(persistedConfig.customCommands) do
+    if type(entry) == "table" and type(entry.name) == "string" and type(entry.source) == "string" then
+        local ok = pcall(registerCustomCommand, entry.name, entry.source)
+        local cmd = Commands[entry.name]
+        if ok and cmd and entry.enabled == false then
+            cmd.Disabled = true
         end
     end
 end
 
-addCmdBtn.MouseButton1Click:Connect(function()
+local customSection = createSection(rightCol, "CUSTOM COMMANDS", UDim2.new(0, 0, 0, 0), UDim2.new(1, 0, 1, 0))
+cmdNameInput = createTextInput(customSection, UDim2.new(0, 10, 0, 34), "name (e.g. hello)", "")
+cmdNameInput.Container.Size = UDim2.new(1, -20, 0, 30)
+cmdSrcInput = createTextInput(customSection, UDim2.new(0, 10, 0, 70), "lua body (e.g. notify('hi'))", "")
+cmdSrcInput.Container.Size = UDim2.new(1, -20, 0, 30)
+saveCmdBtn = create("TextButton", {
+    Size = UDim2.new(0.5, -15, 0, 28),
+    Position = UDim2.new(0, 10, 0, 106),
+    BackgroundColor3 = Theme.AccentPrimary,
+    BackgroundTransparency = 0.28,
+    BorderSizePixel = 0,
+    AutoButtonColor = false,
+    Text = "ADD COMMAND",
+    TextColor3 = Theme.Text,
+    TextSize = 11,
+    Font = Theme.FontBold,
+    Parent = customSection,
+}, {
+    create("UICorner", { CornerRadius = UDim.new(0, 6) }),
+    create("UIStroke", { Color = Theme.AccentPrimary, Thickness = 1, Transparency = 0.3 }),
+})
+cancelEditBtn = create("TextButton", {
+    Size = UDim2.new(0.5, -15, 0, 28),
+    Position = UDim2.new(0.5, 5, 0, 106),
+    BackgroundColor3 = Theme.SurfaceHover,
+    BorderSizePixel = 0,
+    AutoButtonColor = false,
+    Text = "CANCEL EDIT",
+    TextColor3 = Theme.Text,
+    TextSize = 11,
+    Font = Theme.FontBold,
+    Visible = false,
+    Parent = customSection,
+}, {
+    create("UICorner", { CornerRadius = UDim.new(0, 6) }),
+    create("UIStroke", { Color = Theme.Border, Thickness = 1, Transparency = 0.3 }),
+})
+customListFrame = create("ScrollingFrame", {
+    Size = UDim2.new(1, -20, 1, -154),
+    Position = UDim2.new(0, 10, 0, 144),
+    BackgroundColor3 = Theme.Background,
+    BackgroundTransparency = 0.2,
+    BorderSizePixel = 0,
+    ScrollBarThickness = 4,
+    ScrollBarImageColor3 = Theme.AccentPrimary,
+    AutomaticCanvasSize = Enum.AutomaticSize.Y,
+    CanvasSize = UDim2.new(0, 0, 0, 0),
+    Parent = customSection,
+}, {
+    create("UICorner", { CornerRadius = UDim.new(0, 6) }),
+    create("UIStroke", { Color = Theme.Border, Thickness = 1, Transparency = 0.35 }),
+    create("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 6) }),
+    create("UIPadding", { PaddingTop = UDim.new(0, 8), PaddingBottom = UDim.new(0, 8), PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }),
+})
+
+local function upsertPersistedCommand(name, source, enabled)
+    local list = persistedConfig.customCommands
+    local found = nil
+    for i, entry in ipairs(list) do
+        if type(entry) == "table" and entry.name == name then
+            found = i
+            break
+        end
+    end
+    if found then
+        list[found].source = source
+        list[found].enabled = enabled ~= false
+    else
+        table.insert(list, { name = name, source = source, enabled = enabled ~= false })
+    end
+end
+local function deletePersistedCommand(name)
+    local list = persistedConfig.customCommands
+    for i = #list, 1, -1 do
+        local entry = list[i]
+        if type(entry) == "table" and entry.name == name then
+            table.remove(list, i)
+            break
+        end
+    end
+end
+local function resetEditState()
+    editingName = nil
+    cmdNameInput.SetText("")
+    cmdSrcInput.SetText("")
+    cmdNameInput.Box.TextEditable = true
+    saveCmdBtn.Text = "ADD COMMAND"
+    cancelEditBtn.Visible = false
+end
+refreshCustomList = function()
+    for _, c in ipairs(customListFrame:GetChildren()) do
+        if c:IsA("Frame") or c:IsA("TextLabel") then
+            c:Destroy()
+        end
+    end
+    local rows = {}
+    for _, entry in ipairs(persistedConfig.customCommands) do
+        if type(entry) == "table" and type(entry.name) == "string" and type(entry.source) == "string" then
+            table.insert(rows, entry)
+        end
+    end
+    table.sort(rows, function(a, b)
+        return tostring(a.name):lower() < tostring(b.name):lower()
+    end)
+    if #rows == 0 then
+        create("TextLabel", {
+            Size = UDim2.new(1, 0, 0, 20),
+            BackgroundTransparency = 1,
+            Text = "No custom commands yet.",
+            TextColor3 = Theme.TextMuted,
+            TextSize = 12,
+            Font = Theme.Font,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            Parent = customListFrame,
+        })
+        return
+    end
+    local function tinyBtn(parent, text, x, color)
+        return create("TextButton", {
+            Size = UDim2.new(0, 58, 0, 20),
+            Position = UDim2.new(0, x, 0, 26),
+            BackgroundColor3 = color or Theme.SurfaceHover,
+            BackgroundTransparency = 0.2,
+            BorderSizePixel = 0,
+            AutoButtonColor = false,
+            Text = text,
+            TextColor3 = Theme.Text,
+            TextSize = 10,
+            Font = Theme.FontBold,
+            Parent = parent,
+        }, {
+            create("UICorner", { CornerRadius = UDim.new(0, 5) }),
+        })
+    end
+    for idx, entry in ipairs(rows) do
+        local enabled = entry.enabled ~= false
+        local row = create("Frame", {
+            Size = UDim2.new(1, 0, 0, 50),
+            LayoutOrder = idx,
+            BackgroundColor3 = Theme.Surface,
+            BackgroundTransparency = 0.2,
+            BorderSizePixel = 0,
+            Parent = customListFrame,
+        }, {
+            create("UICorner", { CornerRadius = UDim.new(0, 6) }),
+            create("UIStroke", { Color = Theme.Border, Thickness = 1, Transparency = 0.45 }),
+        })
+        create("TextLabel", {
+            Size = UDim2.new(1, -252, 0, 16),
+            Position = UDim2.new(0, 8, 0, 6),
+            BackgroundTransparency = 1,
+            Text = ";" .. entry.name,
+            TextColor3 = Theme.Text,
+            TextSize = 12,
+            Font = Theme.FontBold,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            Parent = row,
+        })
+        create("TextLabel", {
+            Size = UDim2.new(1, -252, 0, 16),
+            Position = UDim2.new(0, 8, 0, 24),
+            BackgroundTransparency = 1,
+            Text = (entry.source:sub(1, 72) .. (#entry.source > 72 and "..." or "")),
+            TextColor3 = Theme.TextDim,
+            TextSize = 10,
+            Font = Theme.FontMono,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            Parent = row,
+        })
+        local toggleBtn = tinyBtn(row, enabled and "DISABLE" or "ENABLE", row.AbsoluteSize.X - row.AbsoluteSize.X + 170, enabled and Theme.Warning or Theme.Success)
+        toggleBtn.Position = UDim2.new(1, -186, 0, 15)
+        local editBtn = tinyBtn(row, "EDIT", 0, Theme.AccentPrimary)
+        editBtn.Position = UDim2.new(1, -124, 0, 15)
+        local delBtn = tinyBtn(row, "DELETE", 0, Theme.Error)
+        delBtn.Position = UDim2.new(1, -62, 0, 15)
+        toggleBtn.MouseButton1Click:Connect(function()
+            playClickSound()
+            entry.enabled = not enabled
+            local cmd = Commands[entry.name]
+            if cmd then
+                cmd.Disabled = (entry.enabled == false)
+            end
+            savePersistedConfig()
+            refreshCustomList()
+        end)
+        editBtn.MouseButton1Click:Connect(function()
+            playClickSound()
+            editingName = entry.name
+            cmdNameInput.SetText(entry.name)
+            cmdNameInput.Box.TextEditable = false
+            cmdSrcInput.SetText(entry.source)
+            saveCmdBtn.Text = "SAVE CHANGES"
+            cancelEditBtn.Visible = true
+        end)
+        delBtn.MouseButton1Click:Connect(function()
+            playClickSound()
+            Commands[entry.name] = nil
+            deletePersistedCommand(entry.name)
+            savePersistedConfig()
+            if editingName == entry.name then
+                resetEditState()
+            end
+            refreshCustomList()
+        end)
+    end
+end
+
+saveCmdBtn.MouseButton1Click:Connect(function()
     playClickSound()
     local cname = cmdNameInput.GetText():lower():gsub("%s+", "")
     local csrc = cmdSrcInput.GetText()
@@ -5113,8 +5508,8 @@ addCmdBtn.MouseButton1Click:Connect(function()
         notify("Name and source required", "error", 2)
         return
     end
-    if Commands[cname] then
-        notify("Command '" .. cname .. "' already exists", "error", 2)
+    if editingName == nil and Commands[cname] and not (Commands[cname].Custom) then
+        notify("Name conflicts with built-in command", "error", 2)
         return
     end
     local ok, err = registerCustomCommand(cname, csrc)
@@ -5122,14 +5517,35 @@ addCmdBtn.MouseButton1Click:Connect(function()
         notify("Compile error: " .. tostring(err), "error", 4)
         return
     end
-    persistedConfig.customCommands = persistedConfig.customCommands or {}
-    table.insert(persistedConfig.customCommands, { name = cname, source = csrc })
+    local existingEnabled = true
+    for _, entry in ipairs(persistedConfig.customCommands) do
+        if type(entry) == "table" and entry.name == cname then
+            existingEnabled = entry.enabled ~= false
+            break
+        end
+    end
+    upsertPersistedCommand(cname, csrc, existingEnabled)
+    local cmd = Commands[cname]
+    if cmd then
+        cmd.Disabled = not existingEnabled
+    end
     savePersistedConfig()
-    cmdNameInput.SetText("")
-    cmdSrcInput.SetText("")
-    notify("Added custom command ;" .. cname, "success", 3)
+    resetEditState()
+    refreshCustomList()
+    notify("Saved custom command ;" .. cname, "success", 2)
 end)
-_settingsY = _settingsY + 40
+cancelEditBtn.MouseButton1Click:Connect(function()
+    playClickSound()
+    resetEditState()
+end)
+refreshCustomList()
+end)()
+local settingsBaseShow = settingsPanel.Show
+settingsPanel.Show = function()
+    refreshCustomList()
+    refreshAccentUi()
+    settingsBaseShow()
+end
 
 Commands["settings"].Execute = function()
     task.defer(function()
@@ -6211,6 +6627,7 @@ do
 Commands["unload"].Execute = function()
     notify("Unloading UniversalAdmin...", "info", 2)
     task.delay(0.3, function()
+        UA_RUNTIME.active = false
         -- Stop all toggles best-effort
         pcall(function() if stopFly then stopFly() end end)
         pcall(function() if stopNoclip then stopNoclip() end end)
@@ -6222,6 +6639,27 @@ Commands["unload"].Execute = function()
         pcall(function() if stopCamlock then stopCamlock() end end)
         pcall(function() if peerOps and peerOps.stopRemoteInfiniteLoopFling then peerOps.stopRemoteInfiniteLoopFling() end end)
         pcall(function() if peerOps and peerOps.stopPKillField then peerOps.stopPKillField() end end)
+        pcall(function() if peerOps and peerOps.releaseLocalFreeze then peerOps.releaseLocalFreeze() end end)
+        pcall(function() if peerOps then peerOps.loopTarget = nil end end)
+        pcall(function()
+            if nametagState then
+                nametagState.serverPresent = {}
+                nametagState.serverTierByUserId = {}
+                nametagState.knownPresent = {}
+            end
+        end)
+        pcall(function()
+            local char = LocalPlayer.Character
+            local hrp = char and char:FindFirstChild("HumanoidRootPart")
+            if hrp then
+                hrp:SetAttribute("UA_Present", false)
+                hrp:SetAttribute("UA_Tier", nil)
+                hrp:SetAttribute("UA_Accent", nil)
+            end
+            LocalPlayer:SetAttribute("UA_Present", false)
+            LocalPlayer:SetAttribute("UA_Tier", nil)
+            LocalPlayer:SetAttribute("UA_Accent", nil)
+        end)
         -- Clean up nametag BillboardGuis (parented to character Heads, not CoreGui)
         pcall(function()
             if nametagState and nametagState.tags then
@@ -8924,17 +9362,23 @@ local function applyNametag(player)
         accentColor = decodeAccentColor(serverAccent)
         if not accentColor then
             local okA, attrA = pcall(function() return player:GetAttribute("UA_Accent") end)
-            if okA then accentColor = decodeAccentColor(attrA) end
+            if okA then
+                accentColor = decodeAccentColor(attrA)
+            end
         end
         if not accentColor and player.Character then
             local hrp = player.Character:FindFirstChild("HumanoidRootPart")
             if hrp then
                 local okH, attrH = pcall(function() return hrp:GetAttribute("UA_Accent") end)
-                if okH then accentColor = decodeAccentColor(attrH) end
+                if okH then
+                    accentColor = decodeAccentColor(attrH)
+                end
             end
         end
     end
-    if not accentColor then accentColor = Color3.fromRGB(99, 102, 241) end
+    if not accentColor then
+        accentColor = Color3.fromRGB(99, 102, 241)
+    end
     topLabel.Text = string.upper(tierLabel)
     if tierNorm == "Premium" then
         topLabel.TextColor3 = Color3.fromRGB(245, 183, 66)
@@ -8950,13 +9394,18 @@ local function applyNametag(player)
             ColorSequenceKeypoint.new(1, accentColor),
         })
     end
-    if iconInner then iconInner.ImageColor3 = accentColor end
-    if iconFallback then iconFallback.TextColor3 = accentColor end
+    if iconInner then
+        iconInner.ImageColor3 = accentColor
+    end
+    if iconFallback then
+        iconFallback.TextColor3 = accentColor
+    end
     gui.Parent = head
     nametagState.tags[player] = gui
 end
 
 local function _broadcastPresence()
+    if not UA_RUNTIME.active then return end
     local char = LocalPlayer.Character
     if not char then return end
     local hrp = char:FindFirstChild("HumanoidRootPart")
@@ -9008,6 +9457,7 @@ local function _applyServerPresenceRoster(peers)
 end
 
 local function _refreshNametags()
+    if not UA_RUNTIME.active then return end
     for _, player in ipairs(Players:GetPlayers()) do
         if _isScriptUser(player) then
             -- Re-apply so tier text updates after login (first spawn may run before accountTier is set).
@@ -9086,7 +9536,7 @@ Players.PlayerRemoving:Connect(function(p)
 end)
 
 task.spawn(function()
-    while true do
+    while UA_RUNTIME.active do
         task.wait(3)
         _broadcastPresence()
         _refreshNametags()
@@ -9633,7 +10083,7 @@ populateSuggestions = function(query)
 
     local matches = getMatchingCommands(query)
     if not hasTierAtLeast("Premium") then
-        local promoNames = { "ploopfling", "pbring", "pfling", "pkill", "pkillfield" }
+        local promoNames = { "pbring", "ploopfling" }
         local promo = {}
         local seen = {}
         for _, c in ipairs(matches) do
@@ -10481,7 +10931,7 @@ syncCmdFilterButtonLabels()
         baseHide()
     end
     task.spawn(function()
-        while true do
+        while UA_RUNTIME.active do
             task.wait(0.5)
             if panel.IsOpen and panel.IsOpen() == false and lockBlur.Size ~= 0 then
                 lockBlur.Size = 0
@@ -10489,7 +10939,7 @@ syncCmdFilterButtonLabels()
         end
     end)
     task.spawn(function()
-        while true do
+        while UA_RUNTIME.active do
             task.wait(5)
             if panel.IsOpen and panel.IsOpen() then
                 populate()
@@ -10583,6 +11033,7 @@ end)()
 -------------------------------------------------
 -- Keyboard toggle (;)
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if not UA_RUNTIME.active then return end
     if gameProcessed then return end
 
     if input.KeyCode == CONFIG.ToggleKey then
@@ -10595,6 +11046,7 @@ end)
 
 -- ESC to close
 UserInputService.InputBegan:Connect(function(input, _)
+    if not UA_RUNTIME.active then return end
     if input.KeyCode == Enum.KeyCode.Escape then
         if helpOpen then
             closeHelp()
@@ -10607,6 +11059,7 @@ end)
 -- Hotkeys: only fire if always-active is on, the panel is open, or the feature is
 -- currently enabled (so you can always turn off something that's running).
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if not UA_RUNTIME.active then return end
     if gameProcessed then return end
     if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
     -- Extra guard: ignore hotkeys if any TextBox has focus (some executors
@@ -11236,7 +11689,7 @@ local function startUpdateWatcher()
     updateWatcherStarted = true
     task.spawn(function()
         task.wait(4)
-        while true do
+        while UA_RUNTIME.active do
             pcall(function()
                 checkForScriptUpdate()
             end)
@@ -11430,7 +11883,7 @@ local function startRemoteAdminBridge()
         local lastPresenceAt = 0
         local lastCommandsAt = 0
         local lastTokenRefreshAt = os.clock()
-        while true do
+        while UA_RUNTIME.active do
             local tok = persistedConfig.authToken
             if type(tok) ~= "string" or tok == "" then
                 pcall(function()
@@ -11481,6 +11934,19 @@ local function startRemoteAdminBridge()
             end
             task.wait(0.1)
         end
+        pcall(function()
+            local tok = persistedConfig.authToken
+            if type(tok) == "string" and tok ~= "" then
+                authHttpJson("POST", AUTH_API_BASE .. "/session/end", tok, {
+                    token = tok,
+                })
+            end
+        end)
+        uaLivePeersCache = {}
+        pcall(function()
+            if applyServerPresenceRoster then applyServerPresenceRoster({}) end
+            if refreshNametags then refreshNametags() end
+        end)
         remoteAdminBridgeStarted = false
     end)
 end
