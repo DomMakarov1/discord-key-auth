@@ -169,7 +169,7 @@ export function createApi() {
         accentPrimary,
         ipAddress: getRequestIp(req),
       });
-      const roster = await listOnlinePeers(token, { placeId, gameId });
+      const roster = await listOnlinePeers(token, {});
       res.json({ ok: true, peers: roster.peers || [] });
     } catch (err) {
       res.status(401).json({ ok: false, error: err.message });

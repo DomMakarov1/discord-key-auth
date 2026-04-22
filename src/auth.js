@@ -909,6 +909,50 @@ export async function enqueueMessageByDiscordId(discordId, message, options = {}
   return { username: user.username, commandId: cmd.id };
 }
 
+export async function enqueueMessageToAllLive(message, options = {}) {
+  const text = (message || "").trim();
+  if (!text) throw new Error("Message required");
+  if (text.length > 500) throw new Error("Message too long (max 500)");
+
+  const senderName = String(options.senderName || "").trim();
+  const anonymous = options.anonymous !== false;
+  const cutoff = new Date(Date.now() - PEER_PRESENCE_MAX_AGE_MS);
+  const rows = await prisma.session.findMany({
+    where: {
+      endedAt: null,
+      revoked: false,
+      lastSeenAt: { gte: cutoff },
+    },
+    orderBy: { lastSeenAt: "desc" },
+    include: {
+      user: { select: { id: true, username: true } },
+    },
+    take: 500,
+  });
+
+  const latestByUser = new Map();
+  for (const s of rows) {
+    if (!latestByUser.has(s.userId)) latestByUser.set(s.userId, s);
+  }
+  const sessions = Array.from(latestByUser.values());
+  if (sessions.length === 0) throw new Error("No live UniversalAdmin users found");
+
+  const commandIds = [];
+  const usernames = [];
+  for (const s of sessions) {
+    const cmd = await enqueueClientCommand(s.userId, "message", {
+      title: "Message received",
+      body: text,
+      sender: anonymous ? null : (senderName || "Unknown sender"),
+      accent: "primary",
+      autoCloseSec: 15,
+    });
+    commandIds.push(cmd.id);
+    usernames.push(s.user?.username || `user:${s.userId}`);
+  }
+  return { count: commandIds.length, commandIds, usernames };
+}
+
 async function hasLiveScriptPresence(userId, maxAgeMs = PRESENCE_MAX_AGE_MS) {
   const cutoff = new Date(Date.now() - maxAgeMs);
   const session = await prisma.session.findFirst({

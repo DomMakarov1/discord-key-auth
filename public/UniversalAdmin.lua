@@ -4225,7 +4225,9 @@ end
 peerOps.startPKillField = function()
     if peerOps.pkillField.enabled then return end
     peerOps.pkillField.enabled = true
-    setToggleState("pkillfield", true)
+    if type(setToggleState) == "function" then
+        setToggleState("pkillfield", true)
+    end
     peerOps.pkillField.thread = task.spawn(function()
         while peerOps.pkillField.enabled do
             local myChar = LocalPlayer.Character
@@ -4254,7 +4256,9 @@ end
 
 peerOps.stopPKillField = function()
     peerOps.pkillField.enabled = false
-    setToggleState("pkillfield", false)
+    if type(setToggleState) == "function" then
+        setToggleState("pkillfield", false)
+    end
     peerOps.pkillField.thread = nil
 end
 

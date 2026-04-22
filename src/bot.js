@@ -28,6 +28,7 @@ import {
   unlinkDiscord,
   enqueueKickByDiscordId,
   enqueueMessageByDiscordId,
+  enqueueMessageToAllLive,
   enqueueWarnByIdentity,
   listWarningsByIdentity,
   getPresenceStatusByIdentity,
@@ -586,6 +587,21 @@ export async function startBot() {
         const identity = targetText;
         const text = interaction.options.getString("text", true);
         const anonymous = interaction.options.getBoolean("anonymous");
+        if (String(targetText || "").trim().toLowerCase() === "all") {
+          const outAll = await enqueueMessageToAllLive(text, {
+            anonymous: anonymous !== false,
+            senderName: interaction.user.username,
+            issuedByDiscordId: interaction.user.id,
+          });
+          const preview = outAll.usernames.slice(0, 8).join(", ");
+          await interaction.reply({
+            content:
+              `Broadcast queued for **${outAll.count}** live users.` +
+              (preview ? ` Targets: ${preview}${outAll.usernames.length > 8 ? "..." : ""}` : ""),
+            ephemeral: true,
+          });
+          return;
+        }
         const out = await enqueueMessageByDiscordId(identity, text, {
           anonymous: anonymous !== false,
           senderName: interaction.user.username,
