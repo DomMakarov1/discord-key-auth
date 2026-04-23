@@ -262,9 +262,34 @@ local function tween(obj, tweenInfo, goals)
     return t
 end
 
-local smoothIn  = TweenInfo.new(0.3, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
-local smoothOut = TweenInfo.new(0.25, Enum.EasingStyle.Quint, Enum.EasingDirection.In)
-local quickTween = TweenInfo.new(0.15, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+local function liftColor(c, amt)
+    amt = tonumber(amt) or 0
+    return Color3.new(
+        math.clamp(c.R + amt, 0, 1),
+        math.clamp(c.G + amt, 0, 1),
+        math.clamp(c.B + amt, 0, 1)
+    )
+end
+local uiMotion = {
+    reduced = persistedConfig and persistedConfig.reducedMotion == true or false,
+}
+local function motionTween(duration, style, dir)
+    local d = tonumber(duration) or 0.2
+    if uiMotion.reduced then
+        d = math.max(0.08, d * 0.55)
+    end
+    return TweenInfo.new(d, style or Enum.EasingStyle.Quad, dir or Enum.EasingDirection.Out)
+end
+
+local smoothIn, smoothOut, quickTween, toastInTween, toastOutTween
+local function applyMotionProfile()
+    smoothIn  = motionTween(0.22, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+    smoothOut = motionTween(0.2, Enum.EasingStyle.Quint, Enum.EasingDirection.In)
+    quickTween = motionTween(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+    toastInTween = motionTween(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+    toastOutTween = motionTween(0.16, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+end
+applyMotionProfile()
 
 -- Sound helpers
 local function playSound(assetId, volume)
@@ -836,6 +861,33 @@ Commands["blink"] = {
     Execute = function() end,
 }
 
+Commands["reverse"] = {
+    Name = "reverse",
+    Aliases = {"rewind", "backtrack"},
+    Description = "Record last 30s movement and rewind to a chosen point",
+    Args = {"seconds|open"},
+    Local = true,
+    Execute = function() end,
+}
+
+Commands["antiall"] = {
+    Name = "antiall",
+    Aliases = {"aa", "antis"},
+    Description = "Toggle anti-void + anti-fling + anti-chair protections",
+    Args = {"on|off|toggle"},
+    Local = true,
+    Execute = function() end,
+}
+
+Commands["motion"] = {
+    Name = "motion",
+    Aliases = {"reducedmotion", "uimotion"},
+    Description = "Toggle reduced UI motion (on/off/toggle)",
+    Args = {"on|off|toggle"},
+    Local = true,
+    Execute = function() end,
+}
+
 local function getMatchingCommands(query)
     local results = {}
     query = query:lower()
@@ -862,6 +914,7 @@ local function getMatchingCommands(query)
 end
 
 local function executeCommand(input)
+    local startedAt = os.clock()
     local parts = input:split(" ")
     local cmdName = parts[1]:lower()
     table.remove(parts, 1)
@@ -882,10 +935,10 @@ local function executeCommand(input)
 
     if cmd then
         if cmd.Premium and not hasTierAtLeast("Premium") then
-            return false, "Premium required - purchase on Discord"
+            return false, "Premium required - purchase on Discord", math.floor((os.clock() - startedAt) * 1000 + 0.5)
         end
         if cmd.Custom and cmd.Disabled then
-            return false, "Custom command is disabled (enable it in ;settings)"
+            return false, "Custom command is disabled (enable it in ;settings)", math.floor((os.clock() - startedAt) * 1000 + 0.5)
         end
         local normalizedInput = tostring(input or "")
         if normalizedInput ~= "" then
@@ -898,13 +951,17 @@ local function executeCommand(input)
             end
             savePersistedConfig()
         end
+        _G.UA_NOTIFY_CONTEXT = { active = true, count = 0 }
         local ok, err = pcall(cmd.Execute, parts)
+        local emitted = ((_G.UA_NOTIFY_CONTEXT and _G.UA_NOTIFY_CONTEXT.count) or 0)
+        _G.UA_NOTIFY_CONTEXT = nil
+        local elapsedMs = math.floor((os.clock() - startedAt) * 1000 + 0.5)
         if not ok then
-            return false, "Error: " .. tostring(err)
+            return false, "Error: " .. tostring(err), elapsedMs, emitted
         end
-        return true, "Executed: " .. cmd.Name
+        return true, "Executed: " .. cmd.Name, elapsedMs, emitted
     end
-    return false, "Unknown command: " .. cmdName
+    return false, "Unknown command: " .. cmdName, math.floor((os.clock() - startedAt) * 1000 + 0.5), 0
 end
 
 -------------------------------------------------
@@ -1305,9 +1362,10 @@ local ResultsFrame = create("ScrollingFrame", {
     Position = UDim2.new(0, 8, 0, 90),
     BackgroundTransparency = 1,
     BorderSizePixel = 0,
-    ScrollBarThickness = 3,
-    ScrollBarImageColor3 = Theme.AccentPrimary,
-    ScrollBarImageTransparency = 0.5,
+    ZIndex = 2,
+    ScrollBarThickness = 0,
+    VerticalScrollBarInset = Enum.ScrollBarInset.None,
+    HorizontalScrollBarInset = Enum.ScrollBarInset.None,
     CanvasSize = UDim2.new(0, 0, 0, 0),
     AutomaticCanvasSize = Enum.AutomaticSize.Y,
     Parent = MainFrame,
@@ -1318,8 +1376,96 @@ local ResultsFrame = create("ScrollingFrame", {
     }),
     create("UIPadding", {
         PaddingBottom = UDim.new(0, 6),
+        PaddingRight = UDim.new(0, 8),
     }),
 })
+local ResultsScrollTrack = create("Frame", {
+    Name = "ResultsCustomScrollTrack",
+    AnchorPoint = Vector2.new(1, 0),
+    Position = UDim2.new(1, -4, 0, 90),
+    Size = UDim2.new(0, 5, 1, -128),
+    BackgroundColor3 = liftColor(Theme.Surface, 0.02),
+    BackgroundTransparency = 0.38,
+    BorderSizePixel = 0,
+    ZIndex = 8,
+    Parent = MainFrame,
+}, {
+    create("UICorner", { CornerRadius = UDim.new(1, 0) }),
+})
+local ResultsScrollThumb = create("Frame", {
+    Name = "ResultsCustomScrollThumb",
+    Size = UDim2.new(1, 0, 0.3, 0),
+    Position = UDim2.new(0, 0, 0, 0),
+    BackgroundColor3 = Theme.AccentPrimary,
+    BackgroundTransparency = 0.1,
+    BorderSizePixel = 0,
+    ZIndex = 9,
+    Active = true,
+    Parent = ResultsScrollTrack,
+}, {
+    create("UICorner", { CornerRadius = UDim.new(1, 0) }),
+})
+local draggingResultsThumb = false
+local resultsDragOffsetY = 0
+local function syncResultsThumb()
+    local viewH = math.max(ResultsFrame.AbsoluteWindowSize.Y, 1)
+    -- AutomaticCanvasSize keeps CanvasSize.Y.Offset at 0; use AbsoluteCanvasSize for real height.
+    local canvasH = math.max(ResultsFrame.AbsoluteCanvasSize.Y, ResultsFrame.CanvasSize.Y.Offset, viewH)
+    local maxPos = math.max(canvasH - viewH, 0)
+    if maxPos <= 0 then
+        ResultsScrollTrack.Visible = false
+        return
+    end
+    ResultsScrollTrack.Visible = true
+    local ratio = math.clamp(viewH / canvasH, 0, 1)
+    local thumbH = math.max(18, math.floor(viewH * ratio + 0.5))
+    local trackH = math.max(ResultsScrollTrack.AbsoluteSize.Y, 1)
+    local travel = math.max(trackH - thumbH, 0)
+    local norm = math.clamp(ResultsFrame.CanvasPosition.Y / maxPos, 0, 1)
+    ResultsScrollThumb.Size = UDim2.new(1, 0, 0, thumbH)
+    ResultsScrollThumb.Position = UDim2.new(0, 0, 0, math.floor(travel * norm + 0.5))
+end
+ResultsFrame:GetPropertyChangedSignal("CanvasPosition"):Connect(syncResultsThumb)
+ResultsFrame:GetPropertyChangedSignal("CanvasSize"):Connect(syncResultsThumb)
+ResultsFrame:GetPropertyChangedSignal("AbsoluteWindowSize"):Connect(syncResultsThumb)
+ResultsFrame:GetPropertyChangedSignal("AbsoluteCanvasSize"):Connect(syncResultsThumb)
+ResultsScrollTrack:GetPropertyChangedSignal("AbsoluteSize"):Connect(syncResultsThumb)
+local _resultsListLayout = ResultsFrame:FindFirstChildOfClass("UIListLayout")
+if _resultsListLayout then
+    _resultsListLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+        task.defer(syncResultsThumb)
+    end)
+end
+ResultsFrame.ChildAdded:Connect(function()
+    task.defer(syncResultsThumb)
+end)
+ResultsFrame.ChildRemoved:Connect(function()
+    task.defer(syncResultsThumb)
+end)
+ResultsScrollThumb.InputBegan:Connect(function(input)
+    if input.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
+    draggingResultsThumb = true
+    resultsDragOffsetY = input.Position.Y - ResultsScrollThumb.AbsolutePosition.Y
+end)
+UserInputService.InputChanged:Connect(function(input)
+    if not draggingResultsThumb or input.UserInputType ~= Enum.UserInputType.MouseMovement then return end
+    local trackTop = ResultsScrollTrack.AbsolutePosition.Y
+    local trackH = math.max(ResultsScrollTrack.AbsoluteSize.Y, 1)
+    local thumbH = ResultsScrollThumb.AbsoluteSize.Y
+    local travel = math.max(trackH - thumbH, 0)
+    local y = math.clamp(input.Position.Y - trackTop - resultsDragOffsetY, 0, travel)
+    local viewH = math.max(ResultsFrame.AbsoluteWindowSize.Y, 1)
+    local canvasH = math.max(ResultsFrame.AbsoluteCanvasSize.Y, ResultsFrame.CanvasSize.Y.Offset, viewH)
+    local maxPos = math.max(canvasH - viewH, 0)
+    local norm = travel > 0 and (y / travel) or 0
+    ResultsFrame.CanvasPosition = Vector2.new(0, math.floor(maxPos * norm + 0.5))
+end)
+UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        draggingResultsThumb = false
+    end
+end)
+task.defer(syncResultsThumb)
 
 -- Status bar at the bottom (rounded bottom corners to match parent)
 local StatusBar = create("Frame", {
@@ -1382,14 +1528,40 @@ local NotifHolder = create("Frame", {
     }),
 })
 
-local function notify(message, notifType, duration)
+local function notify(message, notifType, duration, execMs)
     notifType = notifType or "info"
     duration = duration or 3
+    local notifyCtx = _G.UA_NOTIFY_CONTEXT
+    if type(notifyCtx) == "table" and notifyCtx.active then
+        notifyCtx.count = (tonumber(notifyCtx.count) or 0) + 1
+    end
 
     local accentColor = Theme.AccentPrimary
     if notifType == "success" then accentColor = Theme.Success
     elseif notifType == "error" then accentColor = Theme.Error
     elseif notifType == "warning" then accentColor = Theme.Warning end
+    local notifLabel = "COMMAND"
+    if notifType == "error" then notifLabel = "ERROR"
+    elseif notifType == "warning" then notifLabel = "WARNING"
+    elseif notifType == "success" then notifLabel = "SUCCESS" end
+
+    local notifShadow = create("Frame", {
+        Size = UDim2.new(0, 284, 0, 0),
+        BackgroundColor3 = Color3.fromRGB(0, 0, 0),
+        BackgroundTransparency = 0.86,
+        BorderSizePixel = 0,
+        ClipsDescendants = true,
+        AutomaticSize = Enum.AutomaticSize.Y,
+        Parent = NotifHolder,
+    }, {
+        create("UICorner", { CornerRadius = UDim.new(0, 12) }),
+        create("UIPadding", {
+            PaddingTop = UDim.new(0, 1),
+            PaddingBottom = UDim.new(0, 1),
+            PaddingLeft = UDim.new(0, 2),
+            PaddingRight = UDim.new(0, 2),
+        }),
+    })
 
     local notif = create("Frame", {
         Size = UDim2.new(0, 280, 0, 0),
@@ -1398,13 +1570,20 @@ local function notify(message, notifType, duration)
         BorderSizePixel = 0,
         ClipsDescendants = true,
         AutomaticSize = Enum.AutomaticSize.Y,
-        Parent = NotifHolder,
+        Parent = notifShadow,
     }, {
-        create("UICorner", { CornerRadius = Theme.CornerRadius }),
+        create("UICorner", { CornerRadius = UDim.new(0, 12) }),
         create("UIStroke", {
             Color = accentColor,
             Thickness = 1,
-            Transparency = 0.5,
+            Transparency = 0.35,
+        }),
+        create("UIGradient", {
+            Color = ColorSequence.new({
+                ColorSequenceKeypoint.new(0, Theme.Surface),
+                ColorSequenceKeypoint.new(1, Theme.Surface),
+            }),
+            Rotation = 90,
         }),
         create("UIPadding", {
             PaddingTop = UDim.new(0, 10),
@@ -1413,7 +1592,29 @@ local function notify(message, notifType, duration)
             PaddingRight = UDim.new(0, 10),
         }),
         create("TextLabel", {
+            Name = "NotifTitle",
+            Size = UDim2.new(1, -28, 0, 14),
+            BackgroundTransparency = 1,
+            Text = notifLabel,
+            TextColor3 = Theme.TextMuted,
+            TextSize = 10,
+            Font = Theme.FontBold,
+            TextXAlignment = Enum.TextXAlignment.Left,
+        }),
+        create("Frame", {
+            Name = "StatusDot",
+            Size = UDim2.new(0, 8, 0, 8),
+            Position = UDim2.new(1, -10, 0, 3),
+            BackgroundColor3 = accentColor,
+            BackgroundTransparency = 0.25,
+            BorderSizePixel = 0,
+        }, {
+            create("UICorner", { CornerRadius = UDim.new(1, 0) }),
+        }),
+        create("TextLabel", {
+            Name = "NotifBody",
             Size = UDim2.new(1, 0, 0, 0),
+            Position = UDim2.new(0, 0, 0, 16),
             AutomaticSize = Enum.AutomaticSize.Y,
             BackgroundTransparency = 1,
             Text = message,
@@ -1423,20 +1624,55 @@ local function notify(message, notifType, duration)
             TextXAlignment = Enum.TextXAlignment.Left,
             TextWrapped = true,
         }),
+        create("TextLabel", {
+            Name = "NotifMeta",
+            Size = UDim2.new(1, 0, 0, 12),
+            Position = UDim2.new(0, 0, 0, 36),
+            BackgroundTransparency = 1,
+            Text = (type(execMs) == "number" and execMs >= 0)
+                and ("completed in " .. tostring(execMs) .. " ms")
+                or "",
+            TextColor3 = Theme.TextMuted,
+            TextTransparency = 0.1,
+            TextSize = 10,
+            Font = Theme.Font,
+            TextXAlignment = Enum.TextXAlignment.Left,
+        }),
     })
+    local msgLabel = notif:FindFirstChild("NotifBody")
+    local meta = notif:FindFirstChild("NotifMeta")
+    local extraY = 0
+    if msgLabel and msgLabel:IsA("TextLabel") then
+        extraY = msgLabel.TextBounds.Y
+    end
+    if meta and meta:IsA("TextLabel") then
+        meta.Visible = type(execMs) == "number" and execMs >= 0
+        meta.Position = UDim2.new(0, 0, 0, 22 + math.max(12, extraY))
+    end
+    task.defer(function()
+        if msgLabel and msgLabel.Parent and meta and meta.Parent and msgLabel:IsA("TextLabel") and meta:IsA("TextLabel") then
+            meta.Position = UDim2.new(0, 0, 0, 22 + math.max(12, msgLabel.TextBounds.Y))
+        end
+    end)
 
     -- Play notification sound
     playNotifSound()
 
     -- Animate in
+    notifShadow.BackgroundTransparency = 1
     notif.BackgroundTransparency = 1
-    tween(notif, smoothIn, { BackgroundTransparency = 0 })
+    notif.Position = UDim2.new(1, 16, 0, 0)
+    tween(notifShadow, toastInTween, { BackgroundTransparency = 0.86 })
+    tween(notif, toastInTween, { BackgroundTransparency = 0 })
+    tween(notif, toastInTween, { Position = UDim2.new(0, 0, 0, 0) })
 
     -- Auto dismiss
     task.delay(duration, function()
-        local t = tween(notif, smoothOut, { BackgroundTransparency = 1 })
+        tween(notifShadow, toastOutTween, { BackgroundTransparency = 1 })
+        tween(notif, toastOutTween, { Position = UDim2.new(1, 20, 0, 0) })
+        local t = tween(notif, toastOutTween, { BackgroundTransparency = 1 })
         t.Completed:Wait()
-        notif:Destroy()
+        notifShadow:Destroy()
     end)
 end
 
@@ -1515,7 +1751,7 @@ local HelpScroll = create("ScrollingFrame", {
     BackgroundTransparency = 1,
     BorderSizePixel = 0,
     ScrollBarThickness = 3,
-    ScrollBarImageColor3 = Theme.AccentPrimary,
+    ScrollBarImageColor3 = Color3.fromRGB(255, 255, 255),
     ScrollBarImageTransparency = 0.5,
     CanvasSize = UDim2.new(0, 0, 0, 0),
     AutomaticCanvasSize = Enum.AutomaticSize.Y,
@@ -1563,6 +1799,7 @@ local function populateHelp()
             Parent = HelpScroll,
         }, {
             create("UICorner", { CornerRadius = UDim.new(0, 6) }),
+            create("UIStroke", { Color = Theme.Border, Thickness = 1, Transparency = 0.72 }),
             create("TextLabel", {
                 Name = "Usage",
                 Size = UDim2.new(0, 220, 0, 16),
@@ -1588,6 +1825,27 @@ local function populateHelp()
                 TextTruncate = Enum.TextTruncate.AtEnd,
             }),
         })
+        local entryGlow = create("Frame", {
+            Name = "RowGlow",
+            Size = UDim2.new(0, 2, 1, -8),
+            Position = UDim2.new(0, 6, 0, 4),
+            BackgroundColor3 = Theme.AccentPrimary,
+            BackgroundTransparency = 1,
+            BorderSizePixel = 0,
+            Parent = entry,
+        }, { create("UICorner", { CornerRadius = UDim.new(0, 2) }) })
+        entry.InputBegan:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseMovement then
+                tween(entry, quickTween, { BackgroundColor3 = liftColor(Theme.Surface, 0.03) })
+                tween(entryGlow, quickTween, { BackgroundTransparency = 0.2 })
+            end
+        end)
+        entry.InputEnded:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseMovement then
+                tween(entry, quickTween, { BackgroundColor3 = Theme.Surface })
+                tween(entryGlow, quickTween, { BackgroundTransparency = 1 })
+            end
+        end)
 
         if cmd.Local then
             create("Frame", {
@@ -1694,6 +1952,104 @@ end
 -- TOOL PANEL UTILITY (reusable draggable panels)
 -------------------------------------------------
 local openPanelCount = 0
+local function attachSoftShadow(target, opts)
+    if not target or not target.Parent then return nil end
+    local SHADOW_IMAGE = "rbxassetid://93208570840427"
+    local parent = target.Parent
+    local offset = (opts and opts.Offset) or Vector2.new(0, 4)
+    local spread = (opts and opts.Grow) or 18
+    local trans = (opts and opts.Transparency) or 0.8
+
+    local function calcStrokeThickness(uiStroke)
+        local thickness = 0
+        if uiStroke.StrokeSizingMode == Enum.StrokeSizingMode.FixedSize then
+            thickness = uiStroke.Thickness
+        else
+            local s = uiStroke.Parent.AbsoluteSize
+            thickness = uiStroke.Thickness * math.min(s.X, s.Y)
+        end
+        if uiStroke.BorderStrokePosition == Enum.BorderStrokePosition.Center then
+            thickness = thickness / 2
+        end
+        return thickness
+    end
+    local function getAbsoluteStrokeThickness(guiObject)
+        local thickest = 0
+        for _, v in ipairs(guiObject:GetChildren()) do
+            if v:IsA("UIStroke") and v.Enabled and v.BorderStrokePosition ~= Enum.BorderStrokePosition.Inner then
+                local t = calcStrokeThickness(v)
+                if t > thickest then thickest = t end
+            end
+        end
+        return thickest
+    end
+    local function getAbsoluteCornerRadius(guiObject)
+        local cornerRadius = 0
+        local uiCorner = guiObject:FindFirstChildOfClass("UICorner")
+        if uiCorner then
+            local s = guiObject.AbsoluteSize
+            cornerRadius = (math.min(s.X, s.Y) * uiCorner.CornerRadius.Scale) + uiCorner.CornerRadius.Offset
+        end
+        return cornerRadius + getAbsoluteStrokeThickness(guiObject)
+    end
+
+    local shadow = create("ImageLabel", {
+        Name = target.Name .. "_DropShadow",
+        AnchorPoint = target.AnchorPoint,
+        BackgroundTransparency = 1,
+        Image = SHADOW_IMAGE,
+        ImageColor3 = Color3.fromRGB(0, 0, 0),
+        ImageTransparency = trans,
+        ScaleType = Enum.ScaleType.Slice,
+        SliceCenter = Rect.new(232, 232, 233, 233),
+        SliceScale = 1,
+        Visible = target.Visible,
+        ZIndex = math.max(0, (target.ZIndex or 1) - 1),
+        Parent = parent,
+    })
+
+    local function sync()
+        if not target.Parent or not shadow.Parent then return end
+        local z = math.max(0, (target.ZIndex or 1) - 1)
+        local stroke = getAbsoluteStrokeThickness(target) * 2
+        shadow.AnchorPoint = target.AnchorPoint
+        shadow.Position = target.Position + UDim2.fromOffset(offset.X, offset.Y)
+        shadow.Size = target.Size + UDim2.fromOffset(spread + stroke, spread + stroke)
+        shadow.SliceScale = math.max(0.01, getAbsoluteCornerRadius(target) / 232)
+        shadow.Visible = target.Visible
+        shadow.ZIndex = z
+    end
+    sync()
+    target:GetPropertyChangedSignal("AbsoluteSize"):Connect(sync)
+    target:GetPropertyChangedSignal("AbsolutePosition"):Connect(sync)
+    target:GetPropertyChangedSignal("Position"):Connect(sync)
+    target:GetPropertyChangedSignal("Size"):Connect(sync)
+    target:GetPropertyChangedSignal("Visible"):Connect(sync)
+    target:GetPropertyChangedSignal("ZIndex"):Connect(sync)
+    target.AncestryChanged:Connect(function(_, p)
+        if not p and shadow and shadow.Parent then shadow:Destroy() end
+    end)
+    return shadow
+end
+
+attachSoftShadow(TopBar, {
+    Offset = Vector2.new(0, 3),
+    Grow = 9,
+    Transparency = 0.86,
+    Corner = 10,
+})
+attachSoftShadow(MainFrame, {
+    Offset = Vector2.new(0, 4),
+    Grow = 16,
+    Transparency = 0.81,
+    Corner = 12,
+})
+attachSoftShadow(HelpPanel, {
+    Offset = Vector2.new(0, 4),
+    Grow = 16,
+    Transparency = 0.81,
+    Corner = 12,
+})
 
 local function createToolPanel(opts)
     -- opts: { Name, Title, Icon, Width, Height, Position }
@@ -1717,8 +2073,14 @@ local function createToolPanel(opts)
         create("UIStroke", {
             Color = Theme.Border,
             Thickness = 1,
-            Transparency = 0.3,
+            Transparency = 0.55,
         }),
+    })
+    attachSoftShadow(panel, {
+        Offset = Vector2.new(0, 6),
+        Grow = 14,
+        Transparency = 0.82,
+        Corner = 12,
     })
 
     -- Gradient glow on top
@@ -1801,7 +2163,7 @@ local function createToolPanel(opts)
         Size = UDim2.new(1, -24, 0, 1),
         Position = UDim2.new(0, 12, 0, 38),
         BackgroundColor3 = Theme.Border,
-        BackgroundTransparency = 0.5,
+        BackgroundTransparency = 0.72,
         BorderSizePixel = 0,
         Parent = panel,
     })
@@ -1901,8 +2263,8 @@ local function createLabel(text, parent, position)
         Position = position,
         BackgroundTransparency = 1,
         Text = text,
-        TextColor3 = Theme.TextDim,
-        TextSize = 11,
+        TextColor3 = Theme.TextMuted,
+        TextSize = 10,
         Font = Theme.FontBold,
         TextXAlignment = Enum.TextXAlignment.Left,
         Parent = parent,
@@ -1928,7 +2290,7 @@ local function createToggleButton(parent, position, initialState)
         create("UIStroke", {
             Color = state and Theme.AccentPrimary or Theme.Border,
             Thickness = 1,
-            Transparency = state and 0.4 or 0.5,
+            Transparency = state and 0.48 or 0.62,
         }),
     })
 
@@ -1956,6 +2318,12 @@ local function createToggleButton(parent, position, initialState)
         playClickSound()
         setState(not state)
         if callback then callback(state) end
+    end)
+    btn.MouseEnter:Connect(function()
+        tween(btn, quickTween, { BackgroundColor3 = state and liftColor(Theme.AccentPrimary, 0.03) or liftColor(Theme.Surface, 0.03) })
+    end)
+    btn.MouseLeave:Connect(function()
+        tween(btn, quickTween, { BackgroundColor3 = state and Theme.AccentPrimary or Theme.Surface })
     end)
 
     return {
@@ -1996,7 +2364,7 @@ local function createStepper(parent, position, initialValue, minVal, maxVal, ste
             create("UIStroke", {
                 Color = Theme.Border,
                 Thickness = 1,
-                Transparency = 0.5,
+                Transparency = 0.62,
             }),
         })
     end
@@ -2020,7 +2388,7 @@ local function createStepper(parent, position, initialValue, minVal, maxVal, ste
         create("UIStroke", {
             Color = Theme.Border,
             Thickness = 1,
-            Transparency = 0.5,
+            Transparency = 0.62,
         }),
     })
 
@@ -2052,7 +2420,7 @@ local function createStepper(parent, position, initialValue, minVal, maxVal, ste
     -- Hover effects
     for _, btn in ipairs({minusBtn, plusBtn}) do
         btn.MouseEnter:Connect(function()
-            tween(btn, quickTween, { BackgroundColor3 = Theme.SurfaceHover })
+            tween(btn, quickTween, { BackgroundColor3 = liftColor(Theme.Surface, 0.03) })
         end)
         btn.MouseLeave:Connect(function()
             tween(btn, quickTween, { BackgroundColor3 = Theme.Surface })
@@ -2102,7 +2470,7 @@ local function createCycleButton(parent, position, options, initialValue, format
         create("UIStroke", {
             Color = Theme.Border,
             Thickness = 1,
-            Transparency = 0.5,
+            Transparency = 0.62,
         }),
     })
 
@@ -2163,7 +2531,7 @@ local function createHotkeyButton(parent, position, initialKey)
         create("UIStroke", {
             Color = Theme.AccentPrimary,
             Thickness = 1,
-            Transparency = 0.5,
+            Transparency = 0.55,
         }),
     })
 
@@ -2966,11 +3334,94 @@ do
         Height = 430,
         Position = UDim2.new(0.5, 160, 0.5, -210),
     })
+    local espScroll = create("ScrollingFrame", {
+        Name = "ESPScroll",
+        Size = UDim2.new(1, 0, 1, 0),
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        ScrollBarThickness = 0,
+        VerticalScrollBarInset = Enum.ScrollBarInset.None,
+        HorizontalScrollBarInset = Enum.ScrollBarInset.None,
+        AutomaticCanvasSize = Enum.AutomaticSize.Y,
+        CanvasSize = UDim2.new(0, 0, 0, 0),
+        Parent = espPanel.Content,
+    }, {
+        create("UIPadding", { PaddingBottom = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }),
+    })
+    local espScrollTrack = create("Frame", {
+        Name = "CustomScrollTrack",
+        AnchorPoint = Vector2.new(1, 0),
+        Position = UDim2.new(1, 0, 0, 44),
+        Size = UDim2.new(0, 2, 1, -52),
+        BackgroundColor3 = liftColor(Theme.Surface, 0.02),
+        BackgroundTransparency = 0.55,
+        BorderSizePixel = 0,
+        Parent = espPanel.Panel,
+    }, {
+        create("UICorner", { CornerRadius = UDim.new(1, 0) }),
+    })
+    local espScrollThumb = create("Frame", {
+        Name = "CustomScrollThumb",
+        Size = UDim2.new(1, 0, 0.3, 0),
+        Position = UDim2.new(0, 0, 0, 0),
+        BackgroundColor3 = Theme.AccentPrimary,
+        BackgroundTransparency = 0.1,
+        BorderSizePixel = 0,
+        Parent = espScrollTrack,
+    }, {
+        create("UICorner", { CornerRadius = UDim.new(1, 0) }),
+    })
+    local draggingThumb = false
+    local dragOffsetY = 0
+    local function syncEspScrollThumb()
+        local viewH = math.max(espScroll.AbsoluteWindowSize.Y, 1)
+        local canvasH = math.max(espScroll.CanvasSize.Y.Offset, viewH)
+        local maxPos = math.max(canvasH - viewH, 0)
+        if maxPos <= 0 then
+            espScrollTrack.Visible = false
+            return
+        end
+        espScrollTrack.Visible = true
+        local ratio = math.clamp(viewH / canvasH, 0, 1)
+        local thumbH = math.max(18, math.floor(viewH * ratio + 0.5))
+        local trackH = math.max(espScrollTrack.AbsoluteSize.Y, 1)
+        local thumbTravel = math.max(trackH - thumbH, 0)
+        local norm = math.clamp(espScroll.CanvasPosition.Y / maxPos, 0, 1)
+        espScrollThumb.Size = UDim2.new(1, 0, 0, thumbH)
+        espScrollThumb.Position = UDim2.new(0, 0, 0, math.floor(thumbTravel * norm + 0.5))
+    end
+    espScroll:GetPropertyChangedSignal("CanvasPosition"):Connect(syncEspScrollThumb)
+    espScroll:GetPropertyChangedSignal("CanvasSize"):Connect(syncEspScrollThumb)
+    espScroll:GetPropertyChangedSignal("AbsoluteWindowSize"):Connect(syncEspScrollThumb)
+    espScrollTrack:GetPropertyChangedSignal("AbsoluteSize"):Connect(syncEspScrollThumb)
+    espScrollThumb.InputBegan:Connect(function(input)
+        if input.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
+        draggingThumb = true
+        dragOffsetY = input.Position.Y - espScrollThumb.AbsolutePosition.Y
+    end)
+    UserInputService.InputChanged:Connect(function(input)
+        if not draggingThumb or input.UserInputType ~= Enum.UserInputType.MouseMovement then return end
+        local trackTop = espScrollTrack.AbsolutePosition.Y
+        local trackH = math.max(espScrollTrack.AbsoluteSize.Y, 1)
+        local thumbH = espScrollThumb.AbsoluteSize.Y
+        local travel = math.max(trackH - thumbH, 0)
+        local y = math.clamp(input.Position.Y - trackTop - dragOffsetY, 0, travel)
+        local viewH = math.max(espScroll.AbsoluteWindowSize.Y, 1)
+        local canvasH = math.max(espScroll.CanvasSize.Y.Offset, viewH)
+        local maxPos = math.max(canvasH - viewH, 0)
+        local norm = travel > 0 and (y / travel) or 0
+        espScroll.CanvasPosition = Vector2.new(0, math.floor(maxPos * norm + 0.5))
+    end)
+    UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            draggingThumb = false
+        end
+    end)
 
-    local y = 4
-    createLabel("MASTER TOGGLE", espPanel.Content, UDim2.new(0, 0, 0, y))
+    local y = 8
+    createLabel("MASTER TOGGLE", espScroll, UDim2.new(0, 0, 0, y))
     y = y + 16
-    local espToggle = createToggleButton(espPanel.Content, UDim2.new(0, 0, 0, y))
+    local espToggle = createToggleButton(espScroll, UDim2.new(0, 0, 0, y))
     espToggle.OnToggle(function(enabled)
         if enabled then
             startESP()
@@ -2984,9 +3435,9 @@ do
 
     -- Feature toggle row helper
     local function addFeature(label, key)
-        createLabel(label, espPanel.Content, UDim2.new(0, 0, 0, y))
+        createLabel(label, espScroll, UDim2.new(0, 0, 0, y))
         y = y + 16
-        local t = createToggleButton(espPanel.Content, UDim2.new(0, 0, 0, y), espState.options[key])
+        local t = createToggleButton(espScroll, UDim2.new(0, 0, 0, y), espState.options[key])
         t.OnToggle(function(enabled)
             espState.options[key] = enabled
             rebuildEspIfEnabled()
@@ -3003,13 +3454,13 @@ do
     addFeature("SKELETONS", "skeletons")
 
     -- Color swatches
-    createLabel("COLOR", espPanel.Content, UDim2.new(0, 0, 0, y))
+    createLabel("COLOR", espScroll, UDim2.new(0, 0, 0, y))
     y = y + 16
     local colorRow = create("Frame", {
         Size = UDim2.new(1, 0, 0, 24),
         Position = UDim2.new(0, 0, 0, y),
         BackgroundTransparency = 1,
-        Parent = espPanel.Content,
+        Parent = espScroll,
     }, {
         create("UIListLayout", {
             FillDirection = Enum.FillDirection.Horizontal,
@@ -3044,6 +3495,8 @@ do
             rebuildEspIfEnabled()
         end)
     end
+    espScroll.CanvasSize = UDim2.new(0, 0, 0, y + 36)
+    task.defer(syncEspScrollThumb)
 
     Commands["esp"].Execute = function()
         task.defer(function()
@@ -4470,6 +4923,325 @@ Commands["antifling"].Execute = function()
     end
 end
 
+;(function()
+local reverseState = {
+    enabled = false,
+    samples = {},
+    maxSeconds = 30,
+    sampleEvery = 0.1,
+    acc = 0,
+    conn = nil,
+    seekSeconds = 8,
+    mode = "instant",
+}
+local reversePanel = createToolPanel({
+    Name = "ReversePanel",
+    Title = "Reverse",
+    Width = 320,
+    Height = 250,
+    Position = UDim2.new(0.5, -160, 0.5, -125),
+})
+createLabel("RECORDING", reversePanel.Content, UDim2.new(0, 0, 0, 4))
+local reverseToggle = createToggleButton(reversePanel.Content, UDim2.new(0, 0, 0, 20), false)
+createLabel("SECONDS BACK", reversePanel.Content, UDim2.new(0, 0, 0, 62))
+local seekValueLabel = create("TextLabel", {
+    Size = UDim2.new(0, 46, 0, 14),
+    Position = UDim2.new(1, -46, 0, 62),
+    BackgroundTransparency = 1,
+    Text = tostring(reverseState.seekSeconds) .. "s",
+    TextColor3 = Theme.TextMuted,
+    TextSize = 10,
+    Font = Theme.Font,
+    TextXAlignment = Enum.TextXAlignment.Right,
+    Parent = reversePanel.Content,
+})
+local seekBar = create("Frame", {
+    Size = UDim2.new(1, 0, 0, 18),
+    Position = UDim2.new(0, 0, 0, 78),
+    BackgroundColor3 = Theme.Surface,
+    BorderSizePixel = 0,
+    Parent = reversePanel.Content,
+}, {
+    create("UICorner", { CornerRadius = UDim.new(0, 6) }),
+    create("UIStroke", { Color = Theme.Border, Thickness = 1, Transparency = 0.55 }),
+})
+local seekFill = create("Frame", {
+    Size = UDim2.new(0, 0, 1, 0),
+    BackgroundColor3 = Theme.AccentPrimary,
+    BackgroundTransparency = 0.45,
+    BorderSizePixel = 0,
+    Parent = seekBar,
+}, { create("UICorner", { CornerRadius = UDim.new(0, 6) }) })
+local seekKnob = create("Frame", {
+    Size = UDim2.new(0, 10, 1, 4),
+    Position = UDim2.new(0, -5, 0.5, 0),
+    AnchorPoint = Vector2.new(0, 0.5),
+    BackgroundColor3 = Theme.Text,
+    BorderSizePixel = 0,
+    Parent = seekBar,
+}, { create("UICorner", { CornerRadius = UDim.new(1, 0) }) })
+createLabel("REWIND MODE", reversePanel.Content, UDim2.new(0, 0, 0, 108))
+local modeCycle = createCycleButton(reversePanel.Content, UDim2.new(0, 0, 0, 124), { "instant", "smooth" }, reverseState.mode, function(v)
+    return v == "smooth" and "SMOOTH" or "INSTANT"
+end)
+local rewindBtn = create("TextButton", {
+    Size = UDim2.new(1, 0, 0, 30),
+    Position = UDim2.new(0, 0, 0, 166),
+    BackgroundColor3 = Theme.AccentPrimary,
+    BackgroundTransparency = 0.35,
+    BorderSizePixel = 0,
+    AutoButtonColor = false,
+    Text = "REWIND NOW",
+    TextColor3 = Theme.Text,
+    TextSize = 12,
+    Font = Theme.FontBold,
+    Parent = reversePanel.Content,
+}, {
+    create("UICorner", { CornerRadius = UDim.new(0, 6) }),
+    create("UIStroke", { Color = Theme.AccentPrimary, Thickness = 1, Transparency = 0.25 }),
+})
+local hint = create("TextLabel", {
+    Size = UDim2.new(1, 0, 0, 26),
+    Position = UDim2.new(0, 0, 0, 202),
+    BackgroundTransparency = 1,
+    Text = "Tracer-style rewind using your last 30s movement",
+    TextColor3 = Theme.TextMuted,
+    TextSize = 10,
+    Font = Theme.Font,
+    TextWrapped = true,
+    Parent = reversePanel.Content,
+})
+local function setSeekSeconds(sec)
+    reverseState.seekSeconds = math.clamp(math.floor((tonumber(sec) or 0) * 10 + 0.5) / 10, 0, reverseState.maxSeconds)
+    local pct = reverseState.seekSeconds / reverseState.maxSeconds
+    seekFill.Size = UDim2.new(pct, 0, 1, 0)
+    seekKnob.Position = UDim2.new(pct, -5, 0.5, 0)
+    seekValueLabel.Text = string.format("%.1fs", reverseState.seekSeconds)
+end
+setSeekSeconds(reverseState.seekSeconds)
+local seeking = false
+seekBar.InputBegan:Connect(function(input)
+    if input.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
+    seeking = true
+    local pct = math.clamp((input.Position.X - seekBar.AbsolutePosition.X) / math.max(1, seekBar.AbsoluteSize.X), 0, 1)
+    setSeekSeconds(pct * reverseState.maxSeconds)
+end)
+UserInputService.InputChanged:Connect(function(input)
+    if not seeking or input.UserInputType ~= Enum.UserInputType.MouseMovement then return end
+    local pct = math.clamp((input.Position.X - seekBar.AbsolutePosition.X) / math.max(1, seekBar.AbsoluteSize.X), 0, 1)
+    setSeekSeconds(pct * reverseState.maxSeconds)
+end)
+UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        seeking = false
+    end
+end)
+local function getSampleForSecondsBack(sec)
+    local tNow = os.clock()
+    local targetT = tNow - math.max(0, tonumber(sec) or 0)
+    local best = nil
+    for i = #reverseState.samples, 1, -1 do
+        local s = reverseState.samples[i]
+        if s and s.t <= targetT then
+            best = s
+            break
+        end
+    end
+    if not best and #reverseState.samples > 0 then
+        best = reverseState.samples[1]
+    end
+    return best
+end
+local function rewindNow(sec, mode)
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then
+        notify("Character missing", "warning", 2)
+        return
+    end
+    if #reverseState.samples == 0 then
+        notify("No movement history yet", "warning", 2)
+        return
+    end
+    local targetSample = getSampleForSecondsBack(sec)
+    if not targetSample or not targetSample.cf then
+        notify("No rewind point available", "warning", 2)
+        return
+    end
+    if mode == "smooth" then
+        local steps = 18
+        local fromCF = hrp.CFrame
+        for i = 1, steps do
+            local a = i / steps
+            hrp.CFrame = fromCF:Lerp(targetSample.cf, a)
+            task.wait(0.01)
+        end
+    else
+        hrp.CFrame = targetSample.cf
+    end
+    pcall(function()
+        hrp.AssemblyLinearVelocity = Vector3.zero
+        hrp.AssemblyAngularVelocity = Vector3.zero
+    end)
+end
+local function startReverseRecord()
+    if reverseState.conn then return end
+    reverseState.conn = RunService.Heartbeat:Connect(function(dt)
+        reverseState.acc = reverseState.acc + dt
+        if reverseState.acc < reverseState.sampleEvery then return end
+        reverseState.acc = 0
+        local char = LocalPlayer.Character
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        if not hrp then return end
+        table.insert(reverseState.samples, { t = os.clock(), cf = hrp.CFrame })
+        local cutoff = os.clock() - reverseState.maxSeconds
+        while #reverseState.samples > 0 and reverseState.samples[1].t < cutoff do
+            table.remove(reverseState.samples, 1)
+        end
+    end)
+end
+local function stopReverseRecord()
+    if reverseState.conn then
+        reverseState.conn:Disconnect()
+        reverseState.conn = nil
+    end
+end
+_G.UA_stopReverse = function()
+    reverseState.enabled = false
+    stopReverseRecord()
+    pcall(function() reverseToggle.SetState(false) end)
+end
+reverseToggle.OnToggle(function(on)
+    reverseState.enabled = on
+    if on then
+        startReverseRecord()
+        notify("Reverse recording enabled", "success", 2)
+    else
+        stopReverseRecord()
+        notify("Reverse recording disabled", "info", 2)
+    end
+end)
+modeCycle.OnChange(function(v)
+    reverseState.mode = tostring(v or "instant")
+end)
+rewindBtn.MouseButton1Click:Connect(function()
+    playClickSound()
+    rewindNow(reverseState.seekSeconds, reverseState.mode)
+end)
+Commands["reverse"].Execute = function(args)
+    if args and args[1] then
+        local a = tostring(args[1]):lower()
+        if a == "on" then
+            if not reverseState.enabled then
+                reverseState.enabled = true
+                reverseToggle.SetState(true)
+                startReverseRecord()
+            end
+        elseif a == "off" then
+            if reverseState.enabled then
+                reverseState.enabled = false
+                reverseToggle.SetState(false)
+                stopReverseRecord()
+            end
+        else
+            local n = tonumber(args[1])
+            if n then
+                setSeekSeconds(n)
+                rewindNow(reverseState.seekSeconds, reverseState.mode)
+            end
+        end
+    end
+    task.defer(function()
+        if not reversePanel.IsOpen() then reversePanel.Show() end
+    end)
+end
+
+local antiAllState = { enabled = false, antivoidConn = nil, antichairConn = nil, lastSafe = nil, ownedAntiFling = false }
+local function startAntiVoid()
+    if antiAllState.antivoidConn then return end
+    antiAllState.antivoidConn = RunService.Heartbeat:Connect(function()
+        local char = LocalPlayer.Character
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        if not hrp then return end
+        local y = hrp.Position.Y
+        local threshold = (workspace.FallenPartsDestroyHeight or -500) + 18
+        if y > threshold then
+            antiAllState.lastSafe = hrp.CFrame
+            return
+        end
+        local recover = antiAllState.lastSafe or CFrame.new(hrp.Position.X, threshold + 12, hrp.Position.Z)
+        hrp.CFrame = recover
+        hrp.AssemblyLinearVelocity = Vector3.zero
+        hrp.AssemblyAngularVelocity = Vector3.zero
+    end)
+end
+local function stopAntiVoid()
+    if antiAllState.antivoidConn then antiAllState.antivoidConn:Disconnect() antiAllState.antivoidConn = nil end
+    antiAllState.lastSafe = nil
+end
+local function startAntiChair()
+    if antiAllState.antichairConn then return end
+    antiAllState.antichairConn = RunService.Heartbeat:Connect(function()
+        local char = LocalPlayer.Character
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        if not hum then return end
+        if hum.Sit then
+            hum.Sit = false
+            pcall(function() hum:ChangeState(Enum.HumanoidStateType.Jumping) end)
+        end
+    end)
+end
+local function stopAntiChair()
+    if antiAllState.antichairConn then antiAllState.antichairConn:Disconnect() antiAllState.antichairConn = nil end
+end
+local function startAntiAll()
+    if antiAllState.enabled then return end
+    antiAllState.enabled = true
+    startAntiVoid()
+    startAntiChair()
+    if not antiFlingState.enabled then
+        antiAllState.ownedAntiFling = true
+        startAntiFling()
+    else
+        antiAllState.ownedAntiFling = false
+    end
+    if type(setToggleState) == "function" then setToggleState("antiall", true) end
+end
+local function stopAntiAll()
+    antiAllState.enabled = false
+    stopAntiVoid()
+    stopAntiChair()
+    if antiAllState.ownedAntiFling and antiFlingState.enabled then
+        stopAntiFling()
+    end
+    antiAllState.ownedAntiFling = false
+    if type(setToggleState) == "function" then setToggleState("antiall", false) end
+end
+_G.UA_stopAntiAll = function()
+    stopAntiAll()
+end
+Commands["antiall"].Execute = function(args)
+    local mode = args and args[1] and tostring(args[1]):lower() or "toggle"
+    if mode == "on" then
+        startAntiAll()
+        notify("Anti-All enabled", "success", 2)
+        return
+    end
+    if mode == "off" then
+        stopAntiAll()
+        notify("Anti-All disabled", "info", 2)
+        return
+    end
+    if antiAllState.enabled then
+        stopAntiAll()
+        notify("Anti-All disabled", "info", 2)
+    else
+        startAntiAll()
+        notify("Anti-All enabled", "success", 2)
+    end
+end
+end)()
+
 -------------------------------------------------
 -- CLICK-FLING
 -- Toggleable mode with two binds:
@@ -4848,6 +5620,21 @@ Commands["prefix"].Execute = function(args)
     notify("Prefix changed to '" .. newPrefix .. "'", "success", 3)
 end
 
+Commands["motion"].Execute = function(args)
+    local mode = args and args[1] and tostring(args[1]):lower() or "toggle"
+    if mode == "on" then
+        uiMotion.reduced = true
+    elseif mode == "off" then
+        uiMotion.reduced = false
+    else
+        uiMotion.reduced = not uiMotion.reduced
+    end
+    persistedConfig.reducedMotion = uiMotion.reduced or nil
+    savePersistedConfig()
+    applyMotionProfile()
+    notify("Reduced motion " .. (uiMotion.reduced and "enabled" or "disabled"), "info", 2)
+end
+
 -------------------------------------------------
 -- TEXT INPUT UTILITY (reusable across panels)
 -------------------------------------------------
@@ -5059,8 +5846,8 @@ nickInput.Box.FocusLost:Connect(function()
     notify("Nickname updated", "success", 2)
 end)
 
-local refreshAccentUi, refreshCustomList
-(function()
+refreshAccentUi, refreshCustomList = refreshAccentUi, refreshCustomList
+;(function()
 local accentSection = createSection(leftCol, "ACCENT PICKER", UDim2.new(0, 0, 0, 140), UDim2.new(1, 0, 0, 330))
 local hueBar = create("Frame", {
     Name = "HueBar",
@@ -5186,11 +5973,11 @@ create("TextLabel", {
 })
 
 local editingName = nil
-local customListFrame
-local cmdNameInput
-local cmdSrcInput
-local saveCmdBtn
-local cancelEditBtn
+customListFrame = customListFrame
+cmdNameInput = cmdNameInput
+cmdSrcInput = cmdSrcInput
+saveCmdBtn = saveCmdBtn
+cancelEditBtn = cancelEditBtn
 
 local function persistAccent(primary, secondary)
     persistedConfig.accentPrimary = {
@@ -5336,7 +6123,7 @@ customListFrame = create("ScrollingFrame", {
     BackgroundTransparency = 0.2,
     BorderSizePixel = 0,
     ScrollBarThickness = 4,
-    ScrollBarImageColor3 = Theme.AccentPrimary,
+    ScrollBarImageColor3 = Color3.fromRGB(255, 255, 255),
     AutomaticCanvasSize = Enum.AutomaticSize.Y,
     CanvasSize = UDim2.new(0, 0, 0, 0),
     Parent = customSection,
@@ -5439,6 +6226,15 @@ refreshCustomList = function()
             create("UICorner", { CornerRadius = UDim.new(0, 6) }),
             create("UIStroke", { Color = Theme.Border, Thickness = 1, Transparency = 0.45 }),
         })
+        local rowGlow = create("Frame", {
+            Name = "RowGlow",
+            Size = UDim2.new(0, 2, 1, -10),
+            Position = UDim2.new(0, 6, 0, 5),
+            BackgroundColor3 = Theme.AccentPrimary,
+            BackgroundTransparency = 1,
+            BorderSizePixel = 0,
+            Parent = row,
+        }, { create("UICorner", { CornerRadius = UDim.new(0, 2) }) })
         create("TextLabel", {
             Size = UDim2.new(1, -252, 0, 16),
             Position = UDim2.new(0, 8, 0, 6),
@@ -5495,6 +6291,18 @@ refreshCustomList = function()
                 resetEditState()
             end
             refreshCustomList()
+        end)
+        row.InputBegan:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseMovement then
+                tween(row, quickTween, { BackgroundColor3 = liftColor(Theme.Surface, 0.03) })
+                tween(rowGlow, quickTween, { BackgroundTransparency = 0.22 })
+            end
+        end)
+        row.InputEnded:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseMovement then
+                tween(row, quickTween, { BackgroundColor3 = Theme.Surface })
+                tween(rowGlow, quickTween, { BackgroundTransparency = 1 })
+            end
         end)
     end
 end
@@ -5761,7 +6569,7 @@ local function mkList(parent, yOffset, height)
         BackgroundTransparency = 0.25,
         BorderSizePixel = 0,
         ScrollBarThickness = 3,
-        ScrollBarImageColor3 = Theme.AccentPrimary,
+        ScrollBarImageColor3 = Color3.fromRGB(255, 255, 255),
         CanvasSize = UDim2.new(0, 0, 0, 0),
         AutomaticCanvasSize = Enum.AutomaticSize.Y,
         Parent = parent,
@@ -6637,6 +7445,8 @@ Commands["unload"].Execute = function()
         pcall(function() if stopSpectate then stopSpectate() end end)
         pcall(function() if stopFreecam then stopFreecam() end end)
         pcall(function() if stopAntiFling then stopAntiFling() end end)
+        pcall(function() if _G.UA_stopAntiAll then _G.UA_stopAntiAll() end end)
+        pcall(function() if _G.UA_stopReverse then _G.UA_stopReverse() end end)
         pcall(function() if stopCamlock then stopCamlock() end end)
         pcall(function() if peerOps and peerOps.stopRemoteInfiniteLoopFling then peerOps.stopRemoteInfiniteLoopFling() end end)
         pcall(function() if peerOps and peerOps.stopPKillField then peerOps.stopPKillField() end end)
@@ -6698,6 +7508,7 @@ end
 -- Click anywhere in the world to teleport there. Toggleable with
 -- a configurable bind key via its own panel.
 -------------------------------------------------
+;(function()
 local clickTpState = {
     enabled = false,
     bind    = Enum.KeyCode.T,
@@ -6790,10 +7601,12 @@ Commands["clicktp"].Execute = function()
         end
     end)
 end
+end)()
 
 -------------------------------------------------
 -- FULLBRIGHT
 -------------------------------------------------
+;(function()
 local fullbrightState = {
     enabled = false,
     savedBrightness = nil,
@@ -6943,6 +7756,7 @@ local function loadDex()
 end
 
 Commands["dex"].Execute = loadDex
+end)()
 
 -------------------------------------------------
 -- CHAT LOG
@@ -7016,7 +7830,7 @@ local chatScroll = create("ScrollingFrame", {
     BackgroundTransparency = 1,
     BorderSizePixel = 0,
     ScrollBarThickness = 4,
-    ScrollBarImageColor3 = Theme.AccentPrimary,
+    ScrollBarImageColor3 = Color3.fromRGB(255, 255, 255),
     CanvasSize = UDim2.new(0, 0, 0, 0),
     AutomaticCanvasSize = Enum.AutomaticSize.Y,
     Parent = chatLogPanel.Content,
@@ -7233,7 +8047,7 @@ Commands["pinghop"].Execute = function()
             BackgroundTransparency = 1,
             BorderSizePixel = 0,
             ScrollBarThickness = 4,
-            ScrollBarImageColor3 = Theme.AccentPrimary,
+            ScrollBarImageColor3 = Color3.fromRGB(255, 255, 255),
             CanvasSize = UDim2.new(0, 0, 0, 0),
             AutomaticCanvasSize = Enum.AutomaticSize.Y,
             Parent = panel.Content,
@@ -7376,7 +8190,7 @@ Commands["admincheck"].Execute = function()
             BackgroundTransparency = 1,
             BorderSizePixel = 0,
             ScrollBarThickness = 4,
-            ScrollBarImageColor3 = Theme.AccentPrimary,
+            ScrollBarImageColor3 = Color3.fromRGB(255, 255, 255),
             CanvasSize = UDim2.new(0, 0, 0, 0),
             AutomaticCanvasSize = Enum.AutomaticSize.Y,
             Parent = panel.Content,
@@ -7659,9 +8473,13 @@ end
 -------------------------------------------------
 -- HITBOX EXPANDER
 -------------------------------------------------
-local hitboxState = { enabled = false, size = 10, connection = nil }
+hitboxState = rawget(_G, "UA_hitboxState")
+if type(hitboxState) ~= "table" then
+    hitboxState = { enabled = false, size = 10, connection = nil }
+    _G.UA_hitboxState = hitboxState
+end
 
-do -- hitbox scope
+;(function()
 
 local function applyHitboxes(size)
     for _, player in ipairs(Players:GetPlayers()) do
@@ -7741,7 +8559,7 @@ Commands["hitbox"].Execute = function(args)
     end
 end
 
-end -- do (hitbox scope)
+end)()
 
 -------------------------------------------------
 -- CAMLOCK / AIM ASSIST
@@ -8056,7 +8874,7 @@ Commands["camlock"].Execute = function(args)
 end
 
 -- On-screen square matching aim cone (vertical FOV geometry); updates every frame when visible.
-local camlockFovBox = create("Frame", {
+camlockFovBox = create("Frame", {
     Name = "CamlockFovGuide",
     Parent = ScreenGui,
     BackgroundTransparency = 1,
@@ -8098,7 +8916,7 @@ end)
 end)()
 
 -- Built in an IIFE: main script was at Luau's ~200 local register cap.
-local aimbotPanel = (function()
+aimbotPanel = (function()
     local panel = createToolPanel({
         Name = "AimbotPanel",
         Title = "Aim assist",
@@ -8335,7 +9153,7 @@ end)()
 -------------------------------------------------
 -- SMOOTH FLY (inertia + momentum + camera banking)
 -------------------------------------------------
-local smoothFlyState = {
+smoothFlyState = smoothFlyState or {
     enabled = false,
     speed = 80,
     hotkey = Enum.KeyCode.G,
@@ -8347,8 +9165,8 @@ local smoothFlyState = {
     bankAngle = 0,
 }
 
-local stopSmoothFly, startSmoothFly
-local smoothFlyToggle -- forward ref for hotkey handler
+stopSmoothFly, startSmoothFly = nil, nil
+smoothFlyToggle = smoothFlyToggle or nil -- forward ref for hotkey handler
 
 ;(function()
 local ACCEL = 3.0
@@ -8568,13 +9386,11 @@ end)()
 -------------------------------------------------
 -- BLINK / DASH (instant forward teleport + FOV effect + sound)
 -------------------------------------------------
-local blinkState = {
+blinkState = blinkState or {
     defaultDist = 50,
     cooldown = false,
     hotkey = Enum.KeyCode.B,
 }
-
-local doBlink
 
 ;(function()
 
@@ -8664,7 +9480,7 @@ local playerListScroll = create("ScrollingFrame", {
     BackgroundTransparency = 1,
     BorderSizePixel = 0,
     ScrollBarThickness = 3,
-    ScrollBarImageColor3 = Theme.AccentPrimary,
+    ScrollBarImageColor3 = Color3.fromRGB(255, 255, 255),
     ScrollBarImageTransparency = 0.5,
     CanvasSize = UDim2.new(0, 0, 0, 0),
     AutomaticCanvasSize = Enum.AutomaticSize.Y,
@@ -8877,7 +9693,7 @@ end)()
         BackgroundTransparency = 1,
         BorderSizePixel = 0,
         ScrollBarThickness = 3,
-        ScrollBarImageColor3 = Theme.AccentPrimary,
+        ScrollBarImageColor3 = Color3.fromRGB(255, 255, 255),
         CanvasSize = UDim2.new(0, 0, 0, 0),
         AutomaticCanvasSize = Enum.AutomaticSize.Y,
         Parent = left,
@@ -9587,7 +10403,7 @@ local COMMAND_CATEGORY_BY_NAME = {
     remotespy = "utility", dex = "utility", chatlog = "social", antiafk = "network", trail = "player",
     pinghop = "network", admincheck = "player", invis = "player", hitbox = "combat", camlock = "combat",
     pfling = "troll", pkill = "troll", pkillfield = "combat",
-    aimbot = "combat", smoothfly = "movement", blink = "movement",
+    aimbot = "combat", smoothfly = "movement", blink = "movement", reverse = "movement", antiall = "combat", motion = "ui",
 }
 
 local function getCommandCategoryId(cmd)
@@ -9623,10 +10439,10 @@ end
 local function createLocalBadge(parent, rightOffset)
     local badge = create("Frame", {
         Name = "LocalBadge",
-        Size = UDim2.new(0, 44, 0, 16),
-        Position = UDim2.new(1, rightOffset or -54, 0, 6),
+        Size = UDim2.new(0, 58, 0, 18),
+        Position = UDim2.new(1, rightOffset or -66, 0, 5),
         BackgroundColor3 = Theme.AccentPrimary,
-        BackgroundTransparency = 0.75,
+        BackgroundTransparency = 0.8,
         BorderSizePixel = 0,
         Parent = parent,
     }, {
@@ -9634,14 +10450,14 @@ local function createLocalBadge(parent, rightOffset)
         create("UIStroke", {
             Color = Theme.AccentPrimary,
             Thickness = 1,
-            Transparency = 0.3,
+            Transparency = 0.5,
         }),
         create("TextLabel", {
             Size = UDim2.new(1, 0, 1, 0),
             BackgroundTransparency = 1,
             Text = "LOCAL",
             TextColor3 = Theme.AccentPrimary,
-            TextSize = 10,
+            TextSize = 9,
             Font = Theme.FontBold,
         }),
     })
@@ -9653,19 +10469,29 @@ local function createSuggestionEntry(cmd, index)
         Name = "Entry_" .. cmd.Name,
         Size = UDim2.new(1, -4, 0, 44),
         BackgroundColor3 = Theme.Surface,
-        BackgroundTransparency = 0,
+        BackgroundTransparency = 0.02,
         BorderSizePixel = 0,
         LayoutOrder = index,
     }, {
         create("UICorner", { CornerRadius = UDim.new(0, 6) }),
+        create("UIStroke", { Color = Theme.Border, Thickness = 1, Transparency = 0.72 }),
     })
+    local hoverGlow = create("Frame", {
+        Name = "HoverGlow",
+        Size = UDim2.new(0, 2, 1, -8),
+        Position = UDim2.new(0, 6, 0, 4),
+        BackgroundColor3 = Theme.AccentPrimary,
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        Parent = entry,
+    }, { create("UICorner", { CornerRadius = UDim.new(0, 2) }) })
 
     local cmdLabel = create("TextLabel", {
         Size = UDim2.new(0, 200, 0, 20),
         Position = UDim2.new(0, 12, 0, 6),
         BackgroundTransparency = 1,
         Text = CONFIG.Prefix .. cmd.Name,
-        TextColor3 = Theme.Text,
+        TextColor3 = liftColor(Theme.Text, 0.02),
         TextSize = 14,
         Font = Theme.FontBold,
         TextXAlignment = Enum.TextXAlignment.Left,
@@ -9677,8 +10503,8 @@ local function createSuggestionEntry(cmd, index)
         Position = UDim2.new(0, 12, 0, 24),
         BackgroundTransparency = 1,
         Text = cmd.Description or "No description",
-        TextColor3 = Theme.TextDim,
-        TextSize = 12,
+        TextColor3 = Theme.TextMuted,
+        TextSize = 11,
         Font = Theme.Font,
         TextXAlignment = Enum.TextXAlignment.Left,
         TextTruncate = Enum.TextTruncate.AtEnd,
@@ -9692,8 +10518,8 @@ local function createSuggestionEntry(cmd, index)
     if getToggleState and getToggleState(cmd.Name) then
         create("Frame", {
             Name = "OnBadge",
-            Size = UDim2.new(0, 28, 0, 16),
-            Position = UDim2.new(1, rightEdge - 28, 0, 6),
+            Size = UDim2.new(0, 34, 0, 18),
+            Position = UDim2.new(1, rightEdge - 34, 0, 5),
             BackgroundColor3 = Theme.Success,
             BackgroundTransparency = 0.75,
             BorderSizePixel = 0,
@@ -9710,7 +10536,7 @@ local function createSuggestionEntry(cmd, index)
                 BackgroundTransparency = 1,
                 Text = "ON",
                 TextColor3 = Theme.Success,
-                TextSize = 10,
+                TextSize = 9,
                 Font = Theme.FontBold,
             }),
         })
@@ -9721,19 +10547,19 @@ local function createSuggestionEntry(cmd, index)
         )
         baseBgColor = entry.BackgroundColor3
         cmdLabel.TextColor3 = Theme.Success
-        rightEdge = rightEdge - 34
+        rightEdge = rightEdge - 40
     end
 
     if cmd.Local then
-        createLocalBadge(entry, rightEdge - 44)
-        rightEdge = rightEdge - 50
+        createLocalBadge(entry, rightEdge - 58)
+        rightEdge = rightEdge - 64
     end
     if isPremiumLocked then
         local lockColor = Color3.fromRGB(130, 130, 130)
         create("Frame", {
             Name = "LockBadge",
-            Size = UDim2.new(0, 76, 0, 16),
-            Position = UDim2.new(0.5, -38, 0, 6),
+            Size = UDim2.new(0, 78, 0, 18),
+            Position = UDim2.new(0.5, -39, 0, 5),
             BackgroundColor3 = lockColor,
             BackgroundTransparency = 0.78,
             BorderSizePixel = 0,
@@ -9762,8 +10588,8 @@ local function createSuggestionEntry(cmd, index)
         local premiumColor = Color3.fromRGB(245, 183, 66)
         create("Frame", {
             Name = "PremiumBadge",
-            Size = UDim2.new(0, 56, 0, 16),
-            Position = UDim2.new(1, rightEdge - 56, 0, 6),
+            Size = UDim2.new(0, 58, 0, 18),
+            Position = UDim2.new(1, rightEdge - 58, 0, 5),
             BackgroundColor3 = premiumColor,
             BackgroundTransparency = 0.78,
             BorderSizePixel = 0,
@@ -9784,7 +10610,7 @@ local function createSuggestionEntry(cmd, index)
                 Font = Theme.FontBold,
             }),
         })
-        rightEdge = rightEdge - 62
+        rightEdge = rightEdge - 64
     end
 
     if cmd.Aliases and #cmd.Aliases > 0 then
@@ -9794,8 +10620,9 @@ local function createSuggestionEntry(cmd, index)
             BackgroundTransparency = 1,
             Text = table.concat(cmd.Aliases, ", "),
             TextColor3 = Theme.TextMuted,
-            TextSize = 11,
+            TextSize = 10,
             Font = Theme.FontMono,
+            TextTransparency = 0.12,
             TextXAlignment = Enum.TextXAlignment.Right,
             Parent = entry,
         })
@@ -9803,12 +10630,14 @@ local function createSuggestionEntry(cmd, index)
 
     entry.InputBegan:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseMovement then
-            tween(entry, quickTween, { BackgroundColor3 = Theme.SurfaceHover })
+            tween(entry, quickTween, { BackgroundColor3 = liftColor(baseBgColor, 0.03) })
+            tween(hoverGlow, quickTween, { BackgroundTransparency = 0.2 })
         end
     end)
     entry.InputEnded:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseMovement then
             tween(entry, quickTween, { BackgroundColor3 = baseBgColor })
+            tween(hoverGlow, quickTween, { BackgroundTransparency = 1 })
         end
     end)
 
@@ -10178,7 +11007,7 @@ local FilterBar = create("Frame", {
     Name = "CmdFilterBar",
     Parent = MainFrame,
     Position = UDim2.new(0, 8, 0, 56),
-    Size = UDim2.new(1, -16, 0, 26),
+    Size = UDim2.new(1, -16, 0, 24),
     BackgroundTransparency = 1,
     ZIndex = 6,
 })
@@ -10188,12 +11017,12 @@ local accessShell = create("Frame", {
     Size = UDim2.new(0.49, -2, 1, 0),
     Position = UDim2.new(0, 0, 0, 0),
     BackgroundColor3 = Theme.Surface,
-    BackgroundTransparency = 0.15,
+    BackgroundTransparency = 0.1,
     BorderSizePixel = 0,
     Parent = FilterBar,
 }, {
     create("UICorner", { CornerRadius = UDim.new(0, 6) }),
-    create("UIStroke", { Color = Theme.Border, Thickness = 1, Transparency = 0.45 }),
+    create("UIStroke", { Color = Theme.Border, Thickness = 1, Transparency = 0.58 }),
 })
 
 local accessChevron = create("TextLabel", {
@@ -10220,7 +11049,7 @@ local accessLabel = create("TextLabel", {
     Position = UDim2.new(0, 26, 0, 0),
     BackgroundTransparency = 1,
     Text = "Access · All access",
-    TextSize = 10,
+    TextSize = 11,
     Font = Theme.FontBold,
     TextColor3 = Theme.Text,
     TextXAlignment = Enum.TextXAlignment.Left,
@@ -10245,12 +11074,12 @@ local categoryShell = create("Frame", {
     Size = UDim2.new(0.49, -2, 1, 0),
     Position = UDim2.new(0.51, 2, 0, 0),
     BackgroundColor3 = Theme.Surface,
-    BackgroundTransparency = 0.15,
+    BackgroundTransparency = 0.1,
     BorderSizePixel = 0,
     Parent = FilterBar,
 }, {
     create("UICorner", { CornerRadius = UDim.new(0, 6) }),
-    create("UIStroke", { Color = Theme.Border, Thickness = 1, Transparency = 0.45 }),
+    create("UIStroke", { Color = Theme.Border, Thickness = 1, Transparency = 0.58 }),
 })
 
 local categoryChevron = create("TextLabel", {
@@ -10277,7 +11106,7 @@ local categoryLabel = create("TextLabel", {
     Position = UDim2.new(0, 26, 0, 0),
     BackgroundTransparency = 1,
     Text = "Type · All types",
-    TextSize = 10,
+    TextSize = 11,
     Font = Theme.FontBold,
     TextColor3 = Theme.Text,
     TextXAlignment = Enum.TextXAlignment.Left,
@@ -10309,14 +11138,14 @@ local filterDropList = create("ScrollingFrame", {
     ZIndex = 40,
     ClipsDescendants = true,
     ScrollBarThickness = 3,
-    ScrollBarImageColor3 = Theme.AccentPrimary,
+    ScrollBarImageColor3 = Color3.fromRGB(255, 255, 255),
     AutomaticCanvasSize = Enum.AutomaticSize.Y,
     CanvasSize = UDim2.new(0, 0, 0, 0),
 }, {
     create("UICorner", { CornerRadius = UDim.new(0, 6) }),
     create("UIStroke", { Color = Theme.Border, Thickness = 1, Transparency = 0.35 }),
     create("UIListLayout", {
-        Padding = UDim.new(0, 2),
+        Padding = UDim.new(0, 4),
         SortOrder = Enum.SortOrder.LayoutOrder,
     }),
     create("UIPadding", {
@@ -10329,9 +11158,6 @@ local filterDropList = create("ScrollingFrame", {
 
 local filterMenuOpen = nil
 local filterMenuTween = nil
-local filterDropOpenTween = TweenInfo.new(0.22, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
-local filterDropCloseTween = TweenInfo.new(0.18, Enum.EasingStyle.Quint, Enum.EasingDirection.In)
-local filterChevronTweenInfo = TweenInfo.new(0.2, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
 
 local function killFilterMenuTween()
     if filterMenuTween then
@@ -10355,9 +11181,9 @@ local function animatedCloseDropdown(onComplete)
     end
     local cur = filterDropList.Size
     filterMenuOpen = nil
-    tween(accessChevron, filterChevronTweenInfo, { Rotation = 0 })
-    tween(categoryChevron, filterChevronTweenInfo, { Rotation = 0 })
-    filterMenuTween = TweenService:Create(filterDropList, filterDropCloseTween, {
+    tween(accessChevron, motionTween(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { Rotation = 0 })
+    tween(categoryChevron, motionTween(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { Rotation = 0 })
+    filterMenuTween = TweenService:Create(filterDropList, motionTween(0.18, Enum.EasingStyle.Quint, Enum.EasingDirection.In), {
         Size = UDim2.new(cur.X.Scale, cur.X.Offset, 0, 0),
         BackgroundTransparency = 1,
     })
@@ -10420,13 +11246,13 @@ local function openCmdFilterMenu(kind, options, setter)
             order = order + 1
             local row = create("TextButton", {
                 Name = "Opt_" .. tostring(opt.key),
-                Size = UDim2.new(1, 0, 0, 22),
+                Size = UDim2.new(1, 0, 0, 20),
                 BackgroundColor3 = Theme.SurfaceHover,
                 BackgroundTransparency = 0.35,
                 BorderSizePixel = 0,
                 AutoButtonColor = false,
                 Text = opt.label,
-                TextSize = 11,
+                TextSize = 10,
                 Font = Theme.Font,
                 TextColor3 = Theme.Text,
                 LayoutOrder = order,
@@ -10462,10 +11288,10 @@ local function openCmdFilterMenu(kind, options, setter)
         filterDropList.Visible = true
 
         killFilterMenuTween()
-        tween(accessChevron, filterChevronTweenInfo, { Rotation = kind == "access" and 180 or 0 })
-        tween(categoryChevron, filterChevronTweenInfo, { Rotation = kind == "category" and 180 or 0 })
+        tween(accessChevron, motionTween(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { Rotation = kind == "access" and 180 or 0 })
+        tween(categoryChevron, motionTween(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { Rotation = kind == "category" and 180 or 0 })
 
-        filterMenuTween = TweenService:Create(filterDropList, filterDropOpenTween, {
+        filterMenuTween = TweenService:Create(filterDropList, motionTween(0.22, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {
             Size = UDim2.new(wScale, wOff, 0, targetH),
             BackgroundTransparency = 0.05,
         })
@@ -10497,16 +11323,16 @@ categoryFilterBtn.MouseButton1Click:Connect(function()
 end)
 
 accessFilterBtn.MouseEnter:Connect(function()
-    tween(accessShell, quickTween, { BackgroundTransparency = 0.05 })
+    tween(accessShell, quickTween, { BackgroundTransparency = 0.06 })
 end)
 accessFilterBtn.MouseLeave:Connect(function()
-    tween(accessShell, quickTween, { BackgroundTransparency = 0.15 })
+    tween(accessShell, quickTween, { BackgroundTransparency = 0.1 })
 end)
 categoryFilterBtn.MouseEnter:Connect(function()
-    tween(categoryShell, quickTween, { BackgroundTransparency = 0.05 })
+    tween(categoryShell, quickTween, { BackgroundTransparency = 0.06 })
 end)
 categoryFilterBtn.MouseLeave:Connect(function()
-    tween(categoryShell, quickTween, { BackgroundTransparency = 0.15 })
+    tween(categoryShell, quickTween, { BackgroundTransparency = 0.1 })
 end)
 
 syncCmdFilterButtonLabels()
@@ -10538,7 +11364,7 @@ syncCmdFilterButtonLabels()
         BackgroundTransparency = 1,
         BorderSizePixel = 0,
         ScrollBarThickness = 3,
-        ScrollBarImageColor3 = Theme.AccentPrimary,
+        ScrollBarImageColor3 = Color3.fromRGB(255, 255, 255),
         AutomaticCanvasSize = Enum.AutomaticSize.Y,
         CanvasSize = UDim2.new(0, 0, 0, 0),
         Parent = panel.Content,
@@ -10731,6 +11557,14 @@ syncCmdFilterButtonLabels()
             order = order + 1
             local placeId = tostring(r.placeId or "")
             local gameId = tostring(r.gameId or "")
+            local lastSeenMs = 0
+            pcall(function()
+                local parsed = DateTime.fromIsoDate(tostring(r.lastSeenAt or ""))
+                if parsed then lastSeenMs = parsed.UnixTimestampMillis end
+            end)
+            if lastSeenMs > 0 and (DateTime.now().UnixTimestampMillis - lastSeenMs) > 15000 then
+                continue
+            end
             local robloxUserId = tostring(r.robloxUserId or "")
             local who = tostring(r.robloxUsername or r.username or "?")
             local tag, tagColor = tierTag(r.tier)
@@ -10748,6 +11582,15 @@ syncCmdFilterButtonLabels()
                 create("UICorner", { CornerRadius = UDim.new(0, 8) }),
                 create("UIStroke", { Color = Theme.Border, Thickness = 1, Transparency = 0.45 }),
             })
+            local rowGlow = create("Frame", {
+                Name = "RowGlow",
+                Size = UDim2.new(0, 2, 1, -10),
+                Position = UDim2.new(0, 6, 0, 5),
+                BackgroundColor3 = Theme.AccentPrimary,
+                BackgroundTransparency = 1,
+                BorderSizePixel = 0,
+                Parent = row,
+            }, { create("UICorner", { CornerRadius = UDim.new(0, 2) }) })
             create("ImageLabel", {
                 Size = UDim2.new(0, 34, 0, 34),
                 Position = UDim2.new(0, 10, 0.5, -17),
@@ -10846,11 +11689,23 @@ syncCmdFilterButtonLabels()
                 if not isPremium then return end
                 local ok = pcall(function()
                     local placeNum = tonumber(placeId)
-                    if not placeNum or gameId == "" then error("Missing place/game id") end
+                    if not placeNum or gameId == "" or #gameId < 16 then error("Missing/invalid place instance id") end
                     TeleportService:TeleportToPlaceInstance(placeNum, gameId, LocalPlayer)
                 end)
                 if not ok then
-                    notify("Join failed (place/game id unavailable)", "warning", 2)
+                    notify("Join failed (instance unavailable or stale)", "warning", 2)
+                end
+            end)
+            row.InputBegan:Connect(function(input)
+                if input.UserInputType == Enum.UserInputType.MouseMovement then
+                    tween(row, quickTween, { BackgroundColor3 = liftColor(Theme.Surface, 0.03) })
+                    tween(rowGlow, quickTween, { BackgroundTransparency = 0.22 })
+                end
+            end)
+            row.InputEnded:Connect(function(input)
+                if input.UserInputType == Enum.UserInputType.MouseMovement then
+                    tween(row, quickTween, { BackgroundColor3 = Theme.Surface })
+                    tween(rowGlow, quickTween, { BackgroundTransparency = 1 })
                 end
             end)
         end
@@ -11189,11 +12044,13 @@ CommandInput.FocusLost:Connect(function(enterPressed)
     end
 
     playClickSound()
-    local success, msg = executeCommand(text)
-    if success then
-        notify(msg, "success")
-    else
-        notify(msg, "error")
+    local success, msg, ms, emitted = executeCommand(text)
+    if (tonumber(emitted) or 0) <= 0 then
+        if success then
+            notify(msg, "success", nil, ms)
+        else
+            notify(msg, "error", nil, ms)
+        end
     end
 
     CommandInput.Text = ""
@@ -11253,11 +12110,13 @@ local function hookChat()
                     -- Clear the chat bar so message doesn't send
                     chatBar.Text = ""
 
-                    local success, msg = executeCommand(cmdText)
-                    if success then
-                        notify(msg, "success")
-                    else
-                        notify(msg, "error")
+                    local success, msg, ms, emitted = executeCommand(cmdText)
+                    if (tonumber(emitted) or 0) <= 0 then
+                        if success then
+                            notify(msg, "success", nil, ms)
+                        else
+                            notify(msg, "error", nil, ms)
+                        end
                     end
                 end
             end
@@ -11300,8 +12159,10 @@ hookChat()
             if msg and msg.Text and msg.Text:sub(1, #CONFIG.Prefix) == CONFIG.Prefix then
                 local cmdText = msg.Text:sub(#CONFIG.Prefix + 1)
                 if cmdText ~= "" then
-                    local okExec, result = executeCommand(cmdText)
-                    notify(result, okExec and "success" or "error")
+                    local okExec, result, ms, emitted = executeCommand(cmdText)
+                    if (tonumber(emitted) or 0) <= 0 then
+                        notify(result, okExec and "success" or "error", nil, ms)
+                    end
                 end
                 return false
             end
@@ -11909,7 +12770,7 @@ local function startRemoteAdminBridge()
                         robloxUserId = tostring(LocalPlayer.UserId),
                         robloxUsername = tostring(LocalPlayer.Name),
                         placeId = tostring(game.PlaceId),
-                        gameId = tostring(game.GameId),
+                        gameId = tostring(game.JobId),
                         hwid = getClientHwid(),
                         accentPrimary = encodeAccentColor(Theme.AccentPrimary),
                     })
