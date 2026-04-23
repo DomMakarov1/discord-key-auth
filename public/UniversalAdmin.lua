@@ -5538,13 +5538,15 @@ cancelEditBtn.MouseButton1Click:Connect(function()
     resetEditState()
 end)
 refreshCustomList()
-end)()
-local settingsBaseShow = settingsPanel.Show
-settingsPanel.Show = function()
-    refreshCustomList()
-    refreshAccentUi()
-    settingsBaseShow()
+do
+    local settingsBaseShow = settingsPanel.Show
+    settingsPanel.Show = function()
+        refreshCustomList()
+        refreshAccentUi()
+        settingsBaseShow()
+    end
 end
+end)()
 
 Commands["settings"].Execute = function()
     task.defer(function()
@@ -7744,6 +7746,8 @@ end -- do (hitbox scope)
 -------------------------------------------------
 -- CAMLOCK / AIM ASSIST
 -------------------------------------------------
+;(function()
+
 local camlockState = {
     armed = false,
     target = nil,
@@ -7767,12 +7771,7 @@ local camlockState = {
     aimZoomFov = 78,
     _savedAimFov = nil,
 }
-
-local stopCamlock, startCamlock
-local pickNearestCamlockTarget
-local updateCamlockTargetLabel
-
-;(function()
+_G.UA_camlockState = camlockState
 
 local CAMLOCK_RS_NAME = "UniversalAdminCamlock"
 -- New crosshair pick must be this many pixels closer (screen space) to switch targets — reduces flicker.
@@ -8107,6 +8106,7 @@ local aimbotPanel = (function()
         Height = 668,
         Position = UDim2.new(0.5, -140, 0.5, -334),
     })
+    local camlockState = _G.UA_camlockState
 
     local function aimHoldBindLabel()
         if camlockState.aimHoldUseMouse then
@@ -9959,7 +9959,7 @@ local function refreshToggleStates()
     safe("silent", targetingState and targetingState.silent)
     safe("resolver", targetingState and targetingState.velocityResolver)
     if hitboxState then safe("hitbox", hitboxState.enabled) end
-    if camlockState then safe("camlock", camlockState.armed) end
+    if _G.UA_camlockState then safe("camlock", _G.UA_camlockState.armed) end
     if smoothFlyState then safe("smoothfly", smoothFlyState.enabled) end
     if peerOps and peerOps.pkillField then safe("pkillfield", peerOps.pkillField.enabled) end
     -- Note: clicktp/fullbright/remotespy/antiafk set their own via setToggleState
@@ -11064,6 +11064,8 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
     -- Extra guard: ignore hotkeys if any TextBox has focus (some executors
     -- don't set gameProcessed for CoreGui TextBoxes)
     if UserInputService:GetFocusedTextBox() then return end
+
+    local camlockState = _G.UA_camlockState
 
     if input.KeyCode == flyState.hotkey then
         if not (hotkeyAlwaysActive["fly"] or flyPanel.IsOpen() or flyState.enabled) then return end
