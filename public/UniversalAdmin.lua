@@ -36,14 +36,12 @@ local CONFIG = {
     UserTagImageId = 119909165185829,
 
     -- Version & changelog (updated by release tool)
-    Version = "1.0.0",
+    Version = "1.0.1",
     Changelog = {
-        "Initial release",
-        "Movement: fly, noclip, speed, smoothfly, spider, blink, infjump",
-        "ESP: highlights, chams, boxes, skeletons, health bars, distance",
-        "Friends system with requests, join requests, and messaging",
-        "Discord key auth with Premium/Owner tiers",
-        "Peer system for cross-user actions",
+        "Base admin created",
+        "Added changelogs",
+        "Added sidebar",
+        "Added spider command"
     },
 
     -- UI Theme
