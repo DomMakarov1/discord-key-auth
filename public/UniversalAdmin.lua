@@ -36,11 +36,10 @@ local CONFIG = {
     UserTagImageId = 119909165185829,
 
     -- Version & changelog (updated by release tool)
-    Version = "1.0.2",
+    Version = "1.0.3",
     Changelog = {
-        "Fixed changelogs",
-        "Added spider",
-        "Added friends tab"
+        "ESP changes",
+        "Fixed UI"
     },
 
     -- UI Theme
@@ -3044,6 +3043,12 @@ S.esp = {
         distance    = true,
         boxes       = false,
         skeletons   = false,
+        tracers     = false,
+        headDot     = false,
+        teamColor   = false,
+        weapons     = false,
+        deadFilter  = true,
+        maxDistance = 0,     -- 0 = unlimited
     },
 }
 
@@ -3064,6 +3069,14 @@ local ESP_BONE_PAIRS_R15 = {
     { "RightLowerLeg", "RightFoot" },
 }
 
+local ESP_BONE_PAIRS_R6 = {
+    { "Head", "Torso" },
+    { "Torso", "Left Arm" },
+    { "Left Arm", "Left Leg" },
+    { "Torso", "Right Arm" },
+    { "Right Arm", "Right Leg" },
+}
+
 local function clearESPForPlayer(player)
     local objs = S.esp.objects[player]
     if not objs then return end
@@ -3071,6 +3084,8 @@ local function clearESPForPlayer(player)
     if objs.billboard and objs.billboard.Parent then objs.billboard:Destroy() end
     if objs.box and objs.box.Parent then objs.box:Destroy() end
     if objs.skeletonHolder and objs.skeletonHolder.Parent then objs.skeletonHolder:Destroy() end
+    if objs.tracer and objs.tracer.Parent then objs.tracer:Destroy() end
+    if objs.headDot and objs.headDot.Parent then objs.headDot:Destroy() end
     S.esp.objects[player] = nil
 end
 
@@ -3085,7 +3100,26 @@ local function buildEspForPlayer(player)
     if player == LocalPlayer then return end
     local char = player.Character
     if not char then return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+
+    -- Dead filter: skip dead/respawning players
+    if S.esp.options.deadFilter and hum and hum.Health <= 0 then
+        clearESPForPlayer(player)
+        return
+    end
+
     clearESPForPlayer(player)
+
+    -- Resolve color: team auto-detect or manual
+    local espColor = S.esp.options.color
+    if S.esp.options.teamColor then
+        local teamColor = player.TeamColor
+        if teamColor and typeof(teamColor) == "Color3" then
+            espColor = teamColor
+        elseif player.Team then
+            espColor = player.Team.TeamColor
+        end
+    end
 
     local entry = {}
     S.esp.objects[player] = entry
@@ -3093,8 +3127,8 @@ local function buildEspForPlayer(player)
     -- Highlight (handles both highlight-only and chams styles)
     if S.esp.options.highlight or S.esp.options.chams then
         local h = Instance.new("Highlight")
-        h.FillColor = S.esp.options.color
-        h.OutlineColor = S.esp.options.color
+        h.FillColor = espColor
+        h.OutlineColor = espColor
         h.FillTransparency = S.esp.options.chams and 0.4 or 0.8
         h.OutlineTransparency = 0.1
         h.DepthMode = S.esp.options.chams
@@ -3122,7 +3156,7 @@ local function buildEspForPlayer(player)
             nameLabel.Position = UDim2.new(0, 0, 0, 0)
             nameLabel.BackgroundTransparency = 1
             nameLabel.Text = player.DisplayName
-            nameLabel.TextColor3 = S.esp.options.color
+            nameLabel.TextColor3 = espColor
             nameLabel.TextStrokeTransparency = 0.3
             nameLabel.TextSize = 13
             nameLabel.Font = Enum.Font.GothamBold
@@ -3162,6 +3196,21 @@ local function buildEspForPlayer(player)
             entry.healthFill = barFill
         end
 
+        if S.esp.options.weapons then
+            local toolLabel = Instance.new("TextLabel")
+            toolLabel.Name = "Weapon"
+            toolLabel.Size = UDim2.new(1, 0, 0, 12)
+            toolLabel.Position = UDim2.new(0, 0, 0, 34)
+            toolLabel.BackgroundTransparency = 1
+            toolLabel.Text = ""
+            toolLabel.TextColor3 = Color3.fromRGB(255, 220, 140)
+            toolLabel.TextStrokeTransparency = 0.35
+            toolLabel.TextSize = 10
+            toolLabel.Font = Enum.Font.Gotham
+            toolLabel.Parent = bb
+            entry.weaponLabel = toolLabel
+        end
+
         entry.billboard = bb
     end
 
@@ -3182,7 +3231,7 @@ local function buildEspForPlayer(player)
         box.BorderSizePixel = 0
         box.Parent = S.esp.boxGui
         local stroke = Instance.new("UIStroke")
-        stroke.Color = S.esp.options.color
+        stroke.Color = espColor
         stroke.Thickness = 1.5
         stroke.Transparency = 0.2
         stroke.Parent = box
@@ -3206,15 +3255,65 @@ local function buildEspForPlayer(player)
         holder.Parent = S.esp.skeletonGui
         entry.skeletonHolder = holder
         entry.skeletonLines = {}
-        for _, pair in ipairs(ESP_BONE_PAIRS_R15) do
+
+        -- Detect rig type for correct bone pairs
+        local rigType = hum and hum.RigType or Enum.HumanoidRigType.R15
+        local bonePairs = rigType == Enum.HumanoidRigType.R6 and ESP_BONE_PAIRS_R6 or ESP_BONE_PAIRS_R15
+
+        for _, pair in ipairs(bonePairs) do
             local line = Instance.new("Frame")
-            line.BackgroundColor3 = S.esp.options.color
+            line.BackgroundColor3 = espColor
             line.BorderSizePixel = 0
             line.AnchorPoint = Vector2.new(0, 0.5)
             line.Size = UDim2.new(0, 0, 0, 2)
             line.Parent = holder
             table.insert(entry.skeletonLines, { line = line, a = pair[1], b = pair[2] })
         end
+    end
+
+    -- Tracer (ScreenGui line from bottom-center to target)
+    if S.esp.options.tracers then
+        if not S.esp.tracerGui then
+            local sg = Instance.new("ScreenGui")
+            sg.Name = "UA_ESP_Tracers"
+            sg.ResetOnSpawn = false
+            sg.IgnoreGuiInset = true
+            sg.DisplayOrder = 398
+            sg.Parent = CoreGui
+            S.esp.tracerGui = sg
+        end
+        local tLine = Instance.new("Frame")
+        tLine.Name = "Tracer_" .. player.Name
+        tLine.BorderSizePixel = 0
+        tLine.BackgroundColor3 = espColor
+        tLine.AnchorPoint = Vector2.new(0, 0.5)
+        tLine.Size = UDim2.new(0, 0, 0, 1)
+        tLine.Parent = S.esp.tracerGui
+        entry.tracer = tLine
+    end
+
+    -- Head dot (small circle on head in 2D projection)
+    if S.esp.options.headDot then
+        if not S.esp.headDotGui then
+            local sg = Instance.new("ScreenGui")
+            sg.Name = "UA_ESP_HeadDots"
+            sg.ResetOnSpawn = false
+            sg.IgnoreGuiInset = true
+            sg.DisplayOrder = 401
+            sg.Parent = CoreGui
+            S.esp.headDotGui = sg
+        end
+        local dot = Instance.new("Frame")
+        dot.Name = "Dot_" .. player.Name
+        dot.Size = UDim2.new(0, 6, 0, 6)
+        dot.AnchorPoint = Vector2.new(0.5, 0.5)
+        dot.BackgroundColor3 = espColor
+        dot.BorderSizePixel = 0
+        dot.Parent = S.esp.headDotGui
+        local dCorner = Instance.new("UICorner")
+        dCorner.CornerRadius = UDim.new(1, 0)
+        dCorner.Parent = dot
+        entry.headDot = dot
     end
 end
 
@@ -3223,6 +3322,7 @@ local function updateEspRender()
     if not cam then return end
     local myChar = LocalPlayer.Character
     local myHrp = myChar and myChar:FindFirstChild("HumanoidRootPart")
+    local maxDist = S.esp.options.maxDistance or 0
 
     for player, entry in pairs(S.esp.objects) do
         local char = player.Character
@@ -3231,11 +3331,26 @@ local function updateEspRender()
         else
             local hum = char:FindFirstChildOfClass("Humanoid")
             local head = char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart")
+            local hrp = char:FindFirstChild("HumanoidRootPart")
 
-            -- Distance / health updates
+            -- Dead filter: remove if died while ESP was on
+            if S.esp.options.deadFilter and hum and hum.Health <= 0 then
+                clearESPForPlayer(player)
+                continue
+            end
+
+            -- Distance
+            local dist = nil
+            if myHrp and head then
+                dist = (head.Position - myHrp.Position).Magnitude
+            end
+
+            -- Max distance cull: hide all visuals if too far
+            local inRange = maxDist == 0 or (dist and dist <= maxDist)
+            local hideAll = not inRange
+
             if entry.distLabel and myHrp and head then
-                local dist = (head.Position - myHrp.Position).Magnitude
-                entry.distLabel.Text = string.format("%d studs", math.floor(dist))
+                entry.distLabel.Text = string.format("%d studs", math.floor(dist or 0))
             end
             if entry.healthFill and hum then
                 local pct = math.clamp(hum.Health / math.max(hum.MaxHealth, 1), 0, 1)
@@ -3249,10 +3364,19 @@ local function updateEspRender()
                 end
             end
 
+            -- Weapon label
+            if entry.weaponLabel then
+                if not hideAll then
+                    local tool = char:FindFirstChildOfClass("Tool")
+                    entry.weaponLabel.Text = tool and tool.Name or ""
+                else
+                    entry.weaponLabel.Text = ""
+                end
+            end
+
             -- Box projection
             if entry.box then
-                local hrp = char:FindFirstChild("HumanoidRootPart")
-                if hrp then
+                if not hideAll and hrp then
                     local size = Vector3.new(4, 6, 0)
                     local topWorld = (hrp.CFrame * CFrame.new(0, size.Y / 2, 0)).Position
                     local botWorld = (hrp.CFrame * CFrame.new(0, -size.Y / 2, 0)).Position
@@ -3267,31 +3391,77 @@ local function updateEspRender()
                     else
                         entry.box.Visible = false
                     end
+                else
+                    entry.box.Visible = false
                 end
             end
 
             -- Skeleton
             if entry.skeletonLines then
-                for _, seg in ipairs(entry.skeletonLines) do
-                    local partA = char:FindFirstChild(seg.a)
-                    local partB = char:FindFirstChild(seg.b)
-                    if partA and partB then
-                        local a, aOn = cam:WorldToViewportPoint(partA.Position)
-                        local b, bOn = cam:WorldToViewportPoint(partB.Position)
-                        if aOn and bOn and a.Z > 0 and b.Z > 0 then
-                            local dx = b.X - a.X
-                            local dy = b.Y - a.Y
-                            local len = math.sqrt(dx * dx + dy * dy)
-                            seg.line.Visible = true
-                            seg.line.Position = UDim2.new(0, a.X, 0, a.Y)
-                            seg.line.Size = UDim2.new(0, len, 0, 2)
-                            seg.line.Rotation = math.deg(math.atan2(dy, dx))
+                if not hideAll then
+                    for _, seg in ipairs(entry.skeletonLines) do
+                        local partA = char:FindFirstChild(seg.a)
+                        local partB = char:FindFirstChild(seg.b)
+                        if partA and partB then
+                            local a, aOn = cam:WorldToViewportPoint(partA.Position)
+                            local b, bOn = cam:WorldToViewportPoint(partB.Position)
+                            if aOn and bOn and a.Z > 0 and b.Z > 0 then
+                                local dx = b.X - a.X
+                                local dy = b.Y - a.Y
+                                local len = math.sqrt(dx * dx + dy * dy)
+                                seg.line.Visible = true
+                                seg.line.Position = UDim2.new(0, a.X, 0, a.Y)
+                                seg.line.Size = UDim2.new(0, len, 0, 2)
+                                seg.line.Rotation = math.deg(math.atan2(dy, dx))
+                            else
+                                seg.line.Visible = false
+                            end
                         else
                             seg.line.Visible = false
                         end
-                    else
+                    end
+                else
+                    for _, seg in ipairs(entry.skeletonLines) do
                         seg.line.Visible = false
                     end
+                end
+            end
+
+            -- Tracer: line from bottom-center to target HRP
+            if entry.tracer then
+                if not hideAll and hrp then
+                    local pos, onScreen = cam:WorldToViewportPoint(hrp.Position)
+                    if onScreen and pos.Z > 0 then
+                        local screenSize = cam.ViewportSize
+                        local bx = screenSize.X / 2
+                        local by = screenSize.Y
+                        local dx = pos.X - bx
+                        local dy = pos.Y - by
+                        local len = math.sqrt(dx * dx + dy * dy)
+                        entry.tracer.Visible = true
+                        entry.tracer.Position = UDim2.new(0, bx, 0, by)
+                        entry.tracer.Size = UDim2.new(0, len, 0, 1)
+                        entry.tracer.Rotation = math.deg(math.atan2(dy, dx))
+                    else
+                        entry.tracer.Visible = false
+                    end
+                else
+                    entry.tracer.Visible = false
+                end
+            end
+
+            -- Head dot: small circle on head
+            if entry.headDot then
+                if not hideAll and head then
+                    local pos, onScreen = cam:WorldToViewportPoint(head.Position + Vector3.new(0, 0.3, 0))
+                    if onScreen and pos.Z > 0 then
+                        entry.headDot.Visible = true
+                        entry.headDot.Position = UDim2.new(0, pos.X, 0, pos.Y)
+                    else
+                        entry.headDot.Visible = false
+                    end
+                else
+                    entry.headDot.Visible = false
                 end
             end
         end
@@ -3333,6 +3503,10 @@ local function stopESP()
     S.esp.boxGui = nil
     if S.esp.skeletonGui and S.esp.skeletonGui.Parent then S.esp.skeletonGui:Destroy() end
     S.esp.skeletonGui = nil
+    if S.esp.tracerGui and S.esp.tracerGui.Parent then S.esp.tracerGui:Destroy() end
+    S.esp.tracerGui = nil
+    if S.esp.headDotGui and S.esp.headDotGui.Parent then S.esp.headDotGui:Destroy() end
+    S.esp.headDotGui = nil
 end
 
 local function rebuildEspIfEnabled()
@@ -3342,6 +3516,10 @@ local function rebuildEspIfEnabled()
         S.esp.boxGui = nil
         if S.esp.skeletonGui and S.esp.skeletonGui.Parent then S.esp.skeletonGui:Destroy() end
         S.esp.skeletonGui = nil
+        if S.esp.tracerGui and S.esp.tracerGui.Parent then S.esp.tracerGui:Destroy() end
+        S.esp.tracerGui = nil
+        if S.esp.headDotGui and S.esp.headDotGui.Parent then S.esp.headDotGui:Destroy() end
+        S.esp.headDotGui = nil
         for _, player in ipairs(Players:GetPlayers()) do
             buildEspForPlayer(player)
         end
@@ -3353,7 +3531,7 @@ do
         Name = "ESPPanel",
         Title = "Player ESP",
         Width = 280,
-        Height = 430,
+        Height = 600,
         Position = UDim2.new(0.5, 160, 0.5, -210),
     })
     local espScroll = create("ScrollingFrame", {
@@ -3441,53 +3619,286 @@ do
     end)
 
     local y = 8
-    createLabel("MASTER TOGGLE", espScroll, UDim2.new(0, 0, 0, y))
-    y = y + 16
-    local espToggle = createToggleButton(espScroll, UDim2.new(0, 0, 0, y))
-    espToggle.OnToggle(function(enabled)
-        if enabled then
+
+    -- Section header helper with subtle divider
+    local function sectionHeader(text)
+        local row = create("Frame", {
+            Size = UDim2.new(1, 0, 0, 20),
+            Position = UDim2.new(0, 0, 0, y),
+            BackgroundTransparency = 1,
+            Parent = espScroll,
+        })
+        local line = create("Frame", {
+            Size = UDim2.new(1, 0, 0, 1),
+            Position = UDim2.new(0, 0, 0, 10),
+            BackgroundColor3 = Theme.Border,
+            BackgroundTransparency = 0.5,
+            Parent = row,
+        })
+        local lbl = create("TextLabel", {
+            Size = UDim2.new(0, 0, 1, 0),
+            Position = UDim2.new(0, 0, 0, 0),
+            BackgroundColor3 = Theme.Background,
+            BackgroundTransparency = 0,
+            Text = "  " .. text .. "  ",
+            TextColor3 = Theme.TextDim,
+            TextSize = 9,
+            Font = Theme.FontBold,
+            TextXAlignment = Enum.TextXAlignment.Center,
+            AnchorPoint = Vector2.new(0.5, 0.5),
+            Parent = row,
+        })
+        y = y + 26
+    end
+
+    local function compactToggle(label, key)
+        local state = S.esp.options[key]
+        local row = Instance.new("TextButton")
+        row.Size = UDim2.new(1, 0, 0, 28)
+        row.Position = UDim2.new(0, 0, 0, y)
+        row.BackgroundColor3 = state and Theme.AccentPrimary or Theme.Surface
+        row.BackgroundTransparency = state and 0.85 or 0.15
+        row.BorderSizePixel = 0
+        row.Text = ""
+        row.AutoButtonColor = false
+        row.Parent = espScroll
+        local rc = Instance.new("UICorner")
+        rc.CornerRadius = UDim.new(0, 6)
+        rc.Parent = row
+        local rs = Instance.new("UIStroke")
+        rs.Color = state and Theme.AccentPrimary or Theme.Border
+        rs.Thickness = 1
+        rs.Transparency = state and 0.4 or 0.55
+        rs.Parent = row
+
+        local lbl = Instance.new("TextLabel")
+        lbl.Size = UDim2.new(1, -64, 1, 0)
+        lbl.Position = UDim2.new(0, 8, 0, 0)
+        lbl.BackgroundTransparency = 1
+        lbl.Text = label
+        lbl.TextColor3 = state and Theme.Text or Theme.TextDim
+        lbl.TextSize = 11
+        lbl.Font = Theme.Font
+        lbl.TextXAlignment = Enum.TextXAlignment.Left
+        lbl.Parent = row
+
+        -- ON/OFF pill
+        local pill = Instance.new("TextButton")
+        pill.Size = UDim2.new(0, 48, 0, 20)
+        pill.AnchorPoint = Vector2.new(1, 0.5)
+        pill.Position = UDim2.new(1, -6, 0.5, 0)
+        pill.BackgroundColor3 = state and Theme.AccentPrimary or Theme.Surface
+        pill.BackgroundTransparency = state and 0.6 or 0
+        pill.BorderSizePixel = 0
+        pill.AutoButtonColor = false
+        pill.Text = state and "ON" or "OFF"
+        pill.TextColor3 = state and Color3.fromRGB(255, 255, 255) or Theme.TextMuted
+        pill.TextSize = 9
+        pill.Font = Theme.FontBold
+        pill.Parent = row
+        local pc = Instance.new("UICorner")
+        pc.CornerRadius = UDim.new(0, 4)
+        pc.Parent = pill
+
+        local function applyRowState(on)
+            state = on
+            S.esp.options[key] = on
+            tween(row, quickTween, { BackgroundColor3 = on and Theme.AccentPrimary or Theme.Surface, BackgroundTransparency = on and 0.85 or 0.15 })
+            tween(rs, quickTween, { Color = on and Theme.AccentPrimary or Theme.Border, Transparency = on and 0.4 or 0.55 })
+            tween(lbl, quickTween, { TextColor3 = on and Theme.Text or Theme.TextDim })
+            tween(pill, quickTween, { BackgroundColor3 = on and Theme.AccentPrimary or Theme.Surface, BackgroundTransparency = on and 0.6 or 0, TextColor3 = on and Color3.fromRGB(255, 255, 255) or Theme.TextMuted })
+            pill.Text = on and "ON" or "OFF"
+            rebuildEspIfEnabled()
+        end
+
+        row.MouseButton1Click:Connect(function() playClickSound(); applyRowState(not state) end)
+        pill.MouseButton1Click:Connect(function() playClickSound(); applyRowState(not state) end)
+
+        y = y + 34
+        return { Row = row, Pill = pill, SetState = applyRowState, GetState = function() return state end }
+    end
+
+    -- Master toggle: full button, dark when off, accent when on
+    local espMasterOn = false
+    local masterRow = create("TextButton", {
+        Size = UDim2.new(1, 0, 0, 34),
+        Position = UDim2.new(0, 0, 0, y),
+        BackgroundColor3 = Theme.Surface,
+        BackgroundTransparency = 0.08,
+        BorderSizePixel = 0,
+        Text = "",
+        AutoButtonColor = false,
+        Parent = espScroll,
+    }, {
+        create("UICorner", { CornerRadius = UDim.new(0, 6) }),
+    })
+    local masterStroke = Instance.new("UIStroke")
+    masterStroke.Color = Theme.Border
+    masterStroke.Thickness = 1
+    masterStroke.Transparency = 0.5
+    masterStroke.Parent = masterRow
+
+    local masterLabel = Instance.new("TextLabel")
+    masterLabel.Size = UDim2.new(1, -64, 1, 0)
+    masterLabel.Position = UDim2.new(0, 10, 0, 0)
+    masterLabel.BackgroundTransparency = 1
+    masterLabel.Text = "ESP DISABLED"
+    masterLabel.TextColor3 = Theme.TextDim
+    masterLabel.TextSize = 12
+    masterLabel.Font = Theme.FontBold
+    masterLabel.TextXAlignment = Enum.TextXAlignment.Left
+    masterLabel.Parent = masterRow
+
+    -- ON/OFF pill on the right
+    local masterPill = Instance.new("TextButton")
+    masterPill.Size = UDim2.new(0, 48, 0, 20)
+    masterPill.AnchorPoint = Vector2.new(1, 0.5)
+    masterPill.Position = UDim2.new(1, -6, 0.5, 0)
+    masterPill.BackgroundColor3 = Theme.Surface
+    masterPill.BackgroundTransparency = 0
+    masterPill.BorderSizePixel = 0
+    masterPill.AutoButtonColor = false
+    masterPill.Text = "OFF"
+    masterPill.TextColor3 = Theme.TextMuted
+    masterPill.TextSize = 10
+    masterPill.Font = Theme.FontBold
+    masterPill.Parent = masterRow
+    local mpc = Instance.new("UICorner")
+    mpc.CornerRadius = UDim.new(0, 4)
+    mpc.Parent = masterPill
+
+    local function setMaster(on)
+        espMasterOn = on
+        if on then
+            masterLabel.Text = "ESP ENABLED"
+            tween(masterRow, quickTween, { BackgroundColor3 = Theme.AccentPrimary, BackgroundTransparency = 0.1 })
+            tween(masterStroke, quickTween, { Color = Theme.AccentPrimary, Transparency = 0.3 })
+            tween(masterLabel, quickTween, { TextColor3 = Color3.fromRGB(255, 255, 255) })
+            tween(masterPill, quickTween, { BackgroundColor3 = Theme.AccentPrimary, BackgroundTransparency = 0.6, TextColor3 = Color3.fromRGB(255, 255, 255) })
+            masterPill.Text = "ON"
             startESP()
             notify("ESP enabled", "success", 2)
         else
+            masterLabel.Text = "ESP DISABLED"
+            tween(masterRow, quickTween, { BackgroundColor3 = Theme.Surface, BackgroundTransparency = 0.08 })
+            tween(masterStroke, quickTween, { Color = Theme.Border, Transparency = 0.5 })
+            tween(masterLabel, quickTween, { TextColor3 = Theme.TextDim })
+            tween(masterPill, quickTween, { BackgroundColor3 = Theme.Surface, BackgroundTransparency = 0, TextColor3 = Theme.TextMuted })
+            masterPill.Text = "OFF"
             stopESP()
             notify("ESP disabled", "info", 2)
         end
-    end)
-    y = y + 40
-
-    -- Feature toggle row helper
-    local function addFeature(label, key)
-        createLabel(label, espScroll, UDim2.new(0, 0, 0, y))
-        y = y + 16
-        local t = createToggleButton(espScroll, UDim2.new(0, 0, 0, y), S.esp.options[key])
-        t.OnToggle(function(enabled)
-            S.esp.options[key] = enabled
-            rebuildEspIfEnabled()
-        end)
-        y = y + 40
     end
 
-    addFeature("HIGHLIGHT (occluded)", "highlight")
-    addFeature("CHAMS (always on top)", "chams")
-    addFeature("NAMES", "names")
-    addFeature("HEALTH BARS", "healthBars")
-    addFeature("DISTANCE", "distance")
-    addFeature("BOXES", "boxes")
-    addFeature("SKELETONS", "skeletons")
+    masterRow.MouseButton1Click:Connect(function() playClickSound(); setMaster(not espMasterOn) end)
+    masterPill.MouseButton1Click:Connect(function() playClickSound(); setMaster(not espMasterOn) end)
+    y = y + 44
+
+    -- Mode selector
+    S.esp.advancedMode = S.esp.advancedMode or false
+    local espModeRow = create("Frame", {
+        Size = UDim2.new(1, 0, 0, 28),
+        Position = UDim2.new(0, 0, 0, y),
+        BackgroundTransparency = 1,
+        Parent = espScroll,
+    })
+    local function makeModePill(label, mode)
+        local isActive = (mode == "advanced" and S.esp.advancedMode) or (mode == "simple" and not S.esp.advancedMode)
+        local btn = create("TextButton", {
+            Size = UDim2.new(0.5, -2, 0, 24),
+            Position = UDim2.new(mode == "simple" and 0 or 0.5, mode == "simple" and 0 or 2, 0, 2),
+            BackgroundColor3 = isActive and Theme.AccentPrimary or Theme.Surface,
+            BackgroundTransparency = isActive and 0.15 or 0.08,
+            BorderSizePixel = 0,
+            Text = label,
+            TextColor3 = isActive and Color3.fromRGB(255, 255, 255) or Theme.TextMuted,
+            TextSize = 10,
+            Font = isActive and Theme.FontBold or Theme.Font,
+            AutoButtonColor = false,
+            Parent = espModeRow,
+        }, {
+            create("UICorner", { CornerRadius = UDim.new(0, 5) }),
+        })
+        if isActive then
+            local ring = Instance.new("UIStroke")
+            ring.Color = Theme.AccentPrimary
+            ring.Thickness = 1
+            ring.Transparency = 0.4
+            ring.Parent = btn
+        end
+        return btn
+    end
+
+    -- Create the advanced container BEFORE the mode buttons so updateModeBtns can see it
+    local espAdvanced = create("Frame", {
+        Name = "ESPAdvanced",
+        Size = UDim2.new(1, 0, 0, 0),
+        Position = UDim2.new(0, 0, 0, y),
+        BackgroundTransparency = 1,
+        Visible = S.esp.advancedMode or false,
+        Parent = espScroll,
+    })
+
+    local espSimpleBtn = makeModePill("Simple", "simple")
+    local espAdvBtn = makeModePill("Advanced", "advanced")
+    local function updateModeBtns()
+        for _, b in ipairs({ espSimpleBtn, espAdvBtn }) do
+            local stroke = b:FindFirstChildOfClass("UIStroke")
+            if stroke then stroke:Destroy() end
+        end
+        local activeBtn = S.esp.advancedMode and espAdvBtn or espSimpleBtn
+        local inactiveBtn = S.esp.advancedMode and espSimpleBtn or espAdvBtn
+        activeBtn.BackgroundColor3 = Theme.AccentPrimary
+        activeBtn.BackgroundTransparency = 0.15
+        activeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+        activeBtn.Font = Theme.FontBold
+        local ring = Instance.new("UIStroke")
+        ring.Color = Theme.AccentPrimary
+        ring.Thickness = 1
+        ring.Transparency = 0.4
+        ring.Parent = activeBtn
+        inactiveBtn.BackgroundColor3 = Theme.Surface
+        inactiveBtn.BackgroundTransparency = 0.08
+        inactiveBtn.TextColor3 = Theme.TextMuted
+        inactiveBtn.Font = Theme.Font
+        espAdvanced.Visible = S.esp.advancedMode
+        task.defer(syncEspScrollThumb)
+    end
+    espSimpleBtn.MouseButton1Click:Connect(function()
+        playClickSound()
+        S.esp.advancedMode = false
+        updateModeBtns()
+    end)
+    espAdvBtn.MouseButton1Click:Connect(function()
+        playClickSound()
+        S.esp.advancedMode = true
+        updateModeBtns()
+    end)
+    y = y + 38
+
+    -- Core features
+    sectionHeader("VISUALS")
+    compactToggle("Highlight (through walls)", "highlight")
+    compactToggle("Chams (always visible)", "chams")
+
+    sectionHeader("INFO")
+    compactToggle("Player names", "names")
+    compactToggle("Health bars", "healthBars")
+    compactToggle("Distance", "distance")
 
     -- Color swatches
-    createLabel("COLOR", espScroll, UDim2.new(0, 0, 0, y))
-    y = y + 16
+    sectionHeader("COLOR")
     local colorRow = create("Frame", {
-        Size = UDim2.new(1, 0, 0, 24),
+        Size = UDim2.new(1, 0, 0, 28),
         Position = UDim2.new(0, 0, 0, y),
         BackgroundTransparency = 1,
         Parent = espScroll,
     }, {
         create("UIListLayout", {
             FillDirection = Enum.FillDirection.Horizontal,
-            Padding = UDim.new(0, 4),
+            Padding = UDim.new(0, 5),
             SortOrder = Enum.SortOrder.LayoutOrder,
+            VerticalAlignment = Enum.VerticalAlignment.Center,
         }),
     })
     local colors = {
@@ -3499,9 +3910,11 @@ do
         Color3.fromRGB(250, 204, 21),
         Color3.fromRGB(245, 245, 245),
     }
+    local activeSwatchIdx = 1
+    local swatches = {}
     for i, c in ipairs(colors) do
         local sw = create("TextButton", {
-            Size = UDim2.new(0, 24, 0, 24),
+            Size = UDim2.new(0, 22, 0, 22),
             BackgroundColor3 = c,
             BorderSizePixel = 0,
             AutoButtonColor = false,
@@ -3509,15 +3922,184 @@ do
             LayoutOrder = i,
             Parent = colorRow,
         }, {
-            create("UICorner", { CornerRadius = UDim.new(0, 5) }),
+            create("UICorner", { CornerRadius = UDim.new(0.5, 0) }),
         })
+        local sel = Instance.new("UIStroke")
+        sel.Color = Color3.fromRGB(255, 255, 255)
+        sel.Thickness = 2
+        sel.Transparency = i == 1 and 0.2 or 1
+        sel.Parent = sw
+        swatches[i] = { btn = sw, ring = sel }
         sw.MouseButton1Click:Connect(function()
             playClickSound()
             S.esp.options.color = c
+            for j, s in ipairs(swatches) do
+                s.ring.Transparency = j == i and 0.2 or 1
+            end
             rebuildEspIfEnabled()
         end)
     end
-    espScroll.CanvasSize = UDim2.new(0, 0, 0, y + 36)
+    y = y + 38
+
+    -- Position advanced container below basic features
+    espAdvanced.Position = UDim2.new(0, 0, 0, y)
+
+    -- Populate advanced features container
+    local ay = 0
+    local function advSectionHeader(text)
+        local row = create("Frame", {
+            Size = UDim2.new(1, 0, 0, 18),
+            Position = UDim2.new(0, 0, 0, ay),
+            BackgroundTransparency = 1,
+            Parent = espAdvanced,
+        })
+        create("Frame", {
+            Size = UDim2.new(1, 0, 0, 1),
+            Position = UDim2.new(0, 0, 0, 9),
+            BackgroundColor3 = Theme.Border,
+            BackgroundTransparency = 0.5,
+            Parent = row,
+        })
+        create("TextLabel", {
+            Size = UDim2.new(0, 0, 1, 0),
+            BackgroundColor3 = Theme.Background,
+            BackgroundTransparency = 0,
+            Text = "  " .. text .. "  ",
+            TextColor3 = Theme.TextDim,
+            TextSize = 9,
+            Font = Theme.FontBold,
+            TextXAlignment = Enum.TextXAlignment.Center,
+            AnchorPoint = Vector2.new(0.5, 0.5),
+            Parent = row,
+        })
+        ay = ay + 24
+    end
+    local function advCompactToggle(key, label)
+        local state = S.esp.options[key]
+        local row = Instance.new("TextButton")
+        row.Size = UDim2.new(1, 0, 0, 28)
+        row.Position = UDim2.new(0, 0, 0, ay)
+        row.BackgroundColor3 = state and Theme.AccentPrimary or Theme.Surface
+        row.BackgroundTransparency = state and 0.85 or 0.15
+        row.BorderSizePixel = 0
+        row.Text = ""
+        row.AutoButtonColor = false
+        row.Parent = espAdvanced
+        local rc = Instance.new("UICorner")
+        rc.CornerRadius = UDim.new(0, 6)
+        rc.Parent = row
+        local rs = Instance.new("UIStroke")
+        rs.Color = state and Theme.AccentPrimary or Theme.Border
+        rs.Thickness = 1
+        rs.Transparency = state and 0.4 or 0.55
+        rs.Parent = row
+
+        local lbl = Instance.new("TextLabel")
+        lbl.Size = UDim2.new(1, -64, 1, 0)
+        lbl.Position = UDim2.new(0, 8, 0, 0)
+        lbl.BackgroundTransparency = 1
+        lbl.Text = label
+        lbl.TextColor3 = state and Theme.Text or Theme.TextDim
+        lbl.TextSize = 11
+        lbl.Font = Theme.Font
+        lbl.TextXAlignment = Enum.TextXAlignment.Left
+        lbl.Parent = row
+
+        local pill = Instance.new("TextButton")
+        pill.Size = UDim2.new(0, 48, 0, 20)
+        pill.AnchorPoint = Vector2.new(1, 0.5)
+        pill.Position = UDim2.new(1, -6, 0.5, 0)
+        pill.BackgroundColor3 = state and Theme.AccentPrimary or Theme.Surface
+        pill.BackgroundTransparency = state and 0.6 or 0
+        pill.BorderSizePixel = 0
+        pill.AutoButtonColor = false
+        pill.Text = state and "ON" or "OFF"
+        pill.TextColor3 = state and Color3.fromRGB(255, 255, 255) or Theme.TextMuted
+        pill.TextSize = 9
+        pill.Font = Theme.FontBold
+        pill.Parent = row
+        local pc = Instance.new("UICorner")
+        pc.CornerRadius = UDim.new(0, 4)
+        pc.Parent = pill
+
+        local function applyState(on)
+            state = on
+            S.esp.options[key] = on
+            tween(row, quickTween, { BackgroundColor3 = on and Theme.AccentPrimary or Theme.Surface, BackgroundTransparency = on and 0.85 or 0.15 })
+            tween(rs, quickTween, { Color = on and Theme.AccentPrimary or Theme.Border, Transparency = on and 0.4 or 0.55 })
+            tween(lbl, quickTween, { TextColor3 = on and Theme.Text or Theme.TextDim })
+            tween(pill, quickTween, { BackgroundColor3 = on and Theme.AccentPrimary or Theme.Surface, BackgroundTransparency = on and 0.6 or 0, TextColor3 = on and Color3.fromRGB(255, 255, 255) or Theme.TextMuted })
+            pill.Text = on and "ON" or "OFF"
+            rebuildEspIfEnabled()
+        end
+
+        row.MouseButton1Click:Connect(function() playClickSound(); applyState(not state) end)
+        pill.MouseButton1Click:Connect(function() playClickSound(); applyState(not state) end)
+
+        ay = ay + 34
+        return { Row = row, Pill = pill, SetState = applyState }
+    end
+
+    advSectionHeader("OVERLAYS")
+    advCompactToggle("boxes", "2D boxes")
+    advCompactToggle("skeletons", "Bone skeletons")
+    advCompactToggle("tracers", "Snaplines to target")
+    advCompactToggle("headDot", "Head dot marker")
+    advSectionHeader("EXTRA INFO")
+    advCompactToggle("teamColor", "Auto team color")
+    advCompactToggle("weapons", "Equipped tool name")
+    advCompactToggle("deadFilter", "Hide dead players")
+    advSectionHeader("MAX DISTANCE")
+    local distRow = create("Frame", {
+        Size = UDim2.new(1, 0, 0, 28),
+        Position = UDim2.new(0, 0, 0, ay),
+        BackgroundTransparency = 1,
+        Parent = espAdvanced,
+    }, {
+        create("UIListLayout", {
+            FillDirection = Enum.FillDirection.Horizontal,
+            Padding = UDim.new(0, 3),
+            SortOrder = Enum.SortOrder.LayoutOrder,
+        }),
+    })
+    local distOpts = { 0, 50, 100, 200, 500, 1000, 2000, 5000 }
+    local distBtns = {}
+    for i = 1, #distOpts do
+        local v = distOpts[i]
+        local isActive = S.esp.options.maxDistance == v
+        local btn = create("TextButton", {
+            Size = UDim2.new(0, math.floor(220 / #distOpts), 0, 24),
+            BackgroundColor3 = isActive and Theme.AccentPrimary or Theme.Surface,
+            BackgroundTransparency = isActive and 0.2 or 0.1,
+            BorderSizePixel = 0,
+            Text = v == 0 and "Off" or v >= 1000 and (tostring(v / 1000) .. "k") or tostring(v),
+            TextColor3 = isActive and Theme.AccentPrimary or Theme.TextMuted,
+            TextSize = 9,
+            Font = isActive and Theme.FontBold or Theme.Font,
+            AutoButtonColor = false,
+            LayoutOrder = i,
+            Parent = distRow,
+        }, {
+            create("UICorner", { CornerRadius = UDim.new(0, 4) }),
+        })
+        btn.MouseButton1Click:Connect(function()
+            playClickSound()
+            S.esp.options.maxDistance = v
+            for j, b in ipairs(distBtns) do
+                b.BackgroundColor3 = j == i and Theme.AccentPrimary or Theme.Surface
+                b.BackgroundTransparency = j == i and 0.2 or 0.1
+                b.TextColor3 = j == i and Theme.AccentPrimary or Theme.TextMuted
+                b.Font = j == i and Theme.FontBold or Theme.Font
+            end
+        end)
+        distBtns[i] = btn
+    end
+    ay = ay + 38
+
+    espAdvanced.Size = UDim2.new(1, 0, 0, ay)
+    y = y + ay
+
+    espScroll.CanvasSize = UDim2.new(0, 0, 0, y + 16)
     task.defer(syncEspScrollThumb)
 
     Commands["esp"].Execute = function()
@@ -14028,7 +14610,14 @@ local function authHttpJson(method, url, token, bodyTable)
         return nil, "HTTP request failed"
     end
     if tonumber(res.StatusCode) ~= 200 then
-        return nil, "HTTP " .. tostring(res.StatusCode or "?")
+        local msg = "HTTP " .. tostring(res.StatusCode or "?")
+        local body = tostring(res.Body or "")
+        local p
+        pcall(function() p = HttpService:JSONDecode(body) end)
+        if type(p) == "table" and type(p.error) == "string" then
+            msg = tostring(p.error)
+        end
+        return nil, msg
     end
     local parsed
     local okDecode = pcall(function() parsed = HttpService:JSONDecode(res.Body or "{}") end)
