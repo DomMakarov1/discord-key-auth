@@ -36,12 +36,11 @@ local CONFIG = {
     UserTagImageId = 119909165185829,
 
     -- Version & changelog (updated by release tool)
-    Version = "1.0.1",
+    Version = "1.0.2",
     Changelog = {
-        "Base admin created",
-        "Added changelogs",
-        "Added sidebar",
-        "Added spider command"
+        "Fixed changelogs",
+        "Added spider",
+        "Added friends tab"
     },
 
     -- UI Theme
@@ -12604,7 +12603,7 @@ local addFriendBtn = create("TextButton", {
     BorderSizePixel = 0,
     AutoButtonColor = false,
     Text = "Add",
-    TextColor3 = Theme.AccentPrimary,
+    TextColor3 = Color3.fromRGB(255, 255, 255),
     TextSize = 11,
     Font = Theme.FontBold,
     Parent = addFriendFrame,
@@ -13710,7 +13709,7 @@ spContinueBtn.BackgroundColor3 = Theme.AccentPrimary
 spContinueBtn.BackgroundTransparency = 0.15
 spContinueBtn.BorderSizePixel = 0
 spContinueBtn.Text = "Continue"
-spContinueBtn.TextColor3 = Theme.AccentPrimary
+spContinueBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 spContinueBtn.TextSize = 12
 spContinueBtn.Font = Theme.FontBold
 spContinueBtn.AutoButtonColor = false
@@ -13724,14 +13723,6 @@ scbStroke.Color = Theme.AccentPrimary
 scbStroke.Thickness = 1
 scbStroke.Transparency = 0.4
 scbStroke.Parent = spContinueBtn
-
-spContinueBtn.MouseButton1Click:Connect(function()
-    sidebarSlideOut()
-    if UA_RUNTIME._revealMainDeferred then
-        UA_RUNTIME._revealMainDeferred()
-        UA_RUNTIME._revealMainDeferred = nil
-    end
-end)
 
 local spProgressTrack = Instance.new("Frame")
 spProgressTrack.Name = "SidebarProgressTrack"
@@ -13832,6 +13823,17 @@ local function sidebarSlideOut()
     task.delay(0.4, function()
         if sidebarGui and sidebarGui.Parent then
             sidebarGui:Destroy()
+        end
+    end)
+end
+
+-- Wire up continue button (after sidebarSlideOut is defined)
+if spContinueBtn and spContinueBtn.Parent then
+    spContinueBtn.MouseButton1Click:Connect(function()
+        sidebarSlideOut()
+        if UA_RUNTIME._revealMainDeferred then
+            UA_RUNTIME._revealMainDeferred()
+            UA_RUNTIME._revealMainDeferred = nil
         end
     end)
 end
