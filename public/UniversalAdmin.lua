@@ -77,6 +77,10 @@ if type(UA_RUNTIME) ~= "table" then
 end
 UA_RUNTIME.active = true
 
+-- Shared state table (reduces local variable count under Luau's 200 limit)
+_G.UA_State = {}
+local S = _G.UA_State
+
 -- UTILITY
 -------------------------------------------------
 local Theme = CONFIG.Theme
@@ -848,6 +852,15 @@ Commands["smoothfly"] = {
     Aliases = {"sfly", "planefly"},
     Description = "Inertia-based flight with momentum and camera banking",
     Args = {"speed"},
+    Execute = function() end,
+}
+
+Commands["spider"] = {
+    Name = "spider",
+    Aliases = {"wallclimb", "climb", "wallwalk"},
+    Description = "Toggle spider climb — walk up walls you touch",
+    Args = {"speed"},
+    Default = 30,
     Execute = function() end,
 }
 
@@ -2578,7 +2591,7 @@ end
 -------------------------------------------------
 -- FLY PANEL + MECHANICS
 -------------------------------------------------
-local flyState = {
+S.fly = {
     enabled = false,
     speed = 50,
     hotkey = Enum.KeyCode.F,
@@ -2631,7 +2644,7 @@ local function applySupermanPose()
     -- Disable the stock Animate script so idle/walk don't fight our pose
     local animateScript = char:FindFirstChild("Animate")
     if animateScript then
-        flyState.savedAnimateDisabled = animateScript.Disabled
+        S.fly.savedAnimateDisabled = animateScript.Disabled
         animateScript.Disabled = true
     end
 
@@ -2662,11 +2675,11 @@ local function applySupermanPose()
     -- Straight torso
     pose(waist, CFrame.new())
 
-    flyState.supermanJointSaves = saves
+    S.fly.supermanJointSaves = saves
 
     -- Continuously re-write Transform so any sneaky animation that starts
     -- doesn't undo our pose.
-    flyState.supermanPoseConn = RunService.Stepped:Connect(function()
+    S.fly.supermanPoseConn = RunService.Stepped:Connect(function()
         for joint in pairs(saves) do
             if joint and joint.Parent then
                 joint.Transform = CFrame.new()
@@ -2674,8 +2687,8 @@ local function applySupermanPose()
         end
     end)
 
-    if flyState.savedAutoRotate == nil then
-        flyState.savedAutoRotate = humanoid.AutoRotate
+    if S.fly.savedAutoRotate == nil then
+        S.fly.savedAutoRotate = humanoid.AutoRotate
     end
     humanoid.AutoRotate = false
 
@@ -2683,49 +2696,49 @@ local function applySupermanPose()
 end
 
 local function clearSupermanPose()
-    if flyState.supermanPoseConn then
-        flyState.supermanPoseConn:Disconnect()
-        flyState.supermanPoseConn = nil
+    if S.fly.supermanPoseConn then
+        S.fly.supermanPoseConn:Disconnect()
+        S.fly.supermanPoseConn = nil
     end
 
-    if flyState.supermanJointSaves then
-        for joint, snap in pairs(flyState.supermanJointSaves) do
+    if S.fly.supermanJointSaves then
+        for joint, snap in pairs(S.fly.supermanJointSaves) do
             if joint and joint.Parent then
                 joint.C0 = snap.C0
                 joint.Transform = snap.Transform
             end
         end
-        flyState.supermanJointSaves = nil
+        S.fly.supermanJointSaves = nil
     end
 
     local char = LocalPlayer.Character
     if char then
         local animateScript = char:FindFirstChild("Animate")
-        if animateScript and flyState.savedAnimateDisabled ~= nil then
-            animateScript.Disabled = flyState.savedAnimateDisabled
+        if animateScript and S.fly.savedAnimateDisabled ~= nil then
+            animateScript.Disabled = S.fly.savedAnimateDisabled
         end
         local humanoid = char:FindFirstChildOfClass("Humanoid")
-        if humanoid and flyState.savedAutoRotate ~= nil then
-            humanoid.AutoRotate = flyState.savedAutoRotate
+        if humanoid and S.fly.savedAutoRotate ~= nil then
+            humanoid.AutoRotate = S.fly.savedAutoRotate
         end
     end
-    flyState.savedAnimateDisabled = nil
-    flyState.savedAutoRotate = nil
+    S.fly.savedAnimateDisabled = nil
+    S.fly.savedAutoRotate = nil
 end
 
 local function stopFly()
-    flyState.enabled = false
-    if flyState.connection then
-        flyState.connection:Disconnect()
-        flyState.connection = nil
+    S.fly.enabled = false
+    if S.fly.connection then
+        S.fly.connection:Disconnect()
+        S.fly.connection = nil
     end
-    if flyState.bodyVelocity then
-        flyState.bodyVelocity:Destroy()
-        flyState.bodyVelocity = nil
+    if S.fly.bodyVelocity then
+        S.fly.bodyVelocity:Destroy()
+        S.fly.bodyVelocity = nil
     end
-    if flyState.bodyGyro then
-        flyState.bodyGyro:Destroy()
-        flyState.bodyGyro = nil
+    if S.fly.bodyGyro then
+        S.fly.bodyGyro:Destroy()
+        S.fly.bodyGyro = nil
     end
     clearSupermanPose()
     local char = LocalPlayer.Character
@@ -2743,7 +2756,7 @@ end
 
 local function startFly()
     -- Clean up any stale fly state first
-    if flyState.enabled then stopFly() end
+    if S.fly.enabled then stopFly() end
 
     local char = LocalPlayer.Character
     if not char then
@@ -2757,7 +2770,7 @@ local function startFly()
         return false
     end
 
-    flyState.enabled = true
+    S.fly.enabled = true
     humanoid.PlatformStand = true
     -- Fallback: also set Physics state & disable interfering states
     pcall(function() humanoid:ChangeState(Enum.HumanoidStateType.Physics) end)
@@ -2765,27 +2778,27 @@ local function startFly()
     pcall(function() humanoid:SetStateEnabled(Enum.HumanoidStateType.Jumping, false) end)
     pcall(function() humanoid:SetStateEnabled(Enum.HumanoidStateType.Running, false) end)
 
-    flyState.bodyVelocity = Instance.new("BodyVelocity")
-    flyState.bodyVelocity.MaxForce = Vector3.new(1e6, 1e6, 1e6)
-    flyState.bodyVelocity.Velocity = Vector3.new(0, 0, 0)
-    flyState.bodyVelocity.Parent = hrp
+    S.fly.bodyVelocity = Instance.new("BodyVelocity")
+    S.fly.bodyVelocity.MaxForce = Vector3.new(1e6, 1e6, 1e6)
+    S.fly.bodyVelocity.Velocity = Vector3.new(0, 0, 0)
+    S.fly.bodyVelocity.Parent = hrp
 
-    flyState.bodyGyro = Instance.new("BodyGyro")
-    flyState.bodyGyro.MaxTorque = Vector3.new(1e6, 1e6, 1e6)
-    flyState.bodyGyro.P = 9000
-    flyState.bodyGyro.D = 500
-    flyState.bodyGyro.Parent = hrp
+    S.fly.bodyGyro = Instance.new("BodyGyro")
+    S.fly.bodyGyro.MaxTorque = Vector3.new(1e6, 1e6, 1e6)
+    S.fly.bodyGyro.P = 9000
+    S.fly.bodyGyro.D = 500
+    S.fly.bodyGyro.Parent = hrp
 
-    if flyState.superman then
+    if S.fly.superman then
         local ok = applySupermanPose()
         if not ok then
-            flyState.superman = false
+            S.fly.superman = false
             if flySupermanToggleRef then flySupermanToggleRef.SetState(false) end
         end
     end
 
-    flyState.connection = RunService.RenderStepped:Connect(function()
-        if not flyState.enabled or not flyState.bodyVelocity or not flyState.bodyGyro then return end
+    S.fly.connection = RunService.RenderStepped:Connect(function()
+        if not S.fly.enabled or not S.fly.bodyVelocity or not S.fly.bodyGyro then return end
         local cam = workspace.CurrentCamera
         if not cam then return end
         local cf = cam.CFrame
@@ -2814,12 +2827,12 @@ local function startFly()
             moveDir = moveDir.Unit
         end
 
-        flyState.bodyVelocity.Velocity = moveDir * flyState.speed
-        if flyState.superman and flyState.supermanJointSaves then
+        S.fly.bodyVelocity.Velocity = moveDir * S.fly.speed
+        if S.fly.superman and S.fly.supermanJointSaves then
             -- Tilt the character so it lays flat pointing where the camera looks
-            flyState.bodyGyro.CFrame = cf * CFrame.Angles(math.rad(-90), 0, 0)
+            S.fly.bodyGyro.CFrame = cf * CFrame.Angles(math.rad(-90), 0, 0)
         else
-            flyState.bodyGyro.CFrame = cf
+            S.fly.bodyGyro.CFrame = cf
         end
     end)
 
@@ -2827,12 +2840,12 @@ local function startFly()
 end
 
 local function setSuperman(enabled)
-    flyState.superman = enabled
-    if flyState.enabled then
+    S.fly.superman = enabled
+    if S.fly.enabled then
         if enabled then
             local ok = applySupermanPose()
             if not ok then
-                flyState.superman = false
+                S.fly.superman = false
                 return false
             end
         else
@@ -2866,20 +2879,20 @@ flyToggle.OnToggle(function(enabled)
 end)
 
 createLabel("SPEED", flyPanel.Content, UDim2.new(0, 0, 0, 46))
-local flySpeedStepper = createStepper(flyPanel.Content, UDim2.new(0, 0, 0, 62), flyState.speed, 10, 500, 10)
+local flySpeedStepper = createStepper(flyPanel.Content, UDim2.new(0, 0, 0, 62), S.fly.speed, 10, 500, 10)
 flySpeedStepper.OnChange(function(v)
-    flyState.speed = v
+    S.fly.speed = v
 end)
 
 createLabel("HOTKEY", flyPanel.Content, UDim2.new(0, 0, 0, 98))
-local flyHotkeyBtn = createHotkeyButton(flyPanel.Content, UDim2.new(0, 0, 0, 114), flyState.hotkey)
+local flyHotkeyBtn = createHotkeyButton(flyPanel.Content, UDim2.new(0, 0, 0, 114), S.fly.hotkey)
 flyHotkeyBtn.OnChange(function(newKey)
-    flyState.hotkey = newKey
+    S.fly.hotkey = newKey
     notify("Flight hotkey set to " .. newKey.Name, "info", 2)
 end)
 
 createLabel("SUPERMAN POSE", flyPanel.Content, UDim2.new(0, 0, 0, 150))
-local flySupermanToggle = createToggleButton(flyPanel.Content, UDim2.new(0, 0, 0, 166), flyState.superman)
+local flySupermanToggle = createToggleButton(flyPanel.Content, UDim2.new(0, 0, 0, 166), S.fly.superman)
 flySupermanToggleRef = flySupermanToggle
 flySupermanToggle.OnToggle(function(enabled)
     local ok = setSuperman(enabled)
@@ -2918,8 +2931,8 @@ Commands["fly"].Execute = function(args)
     if args and args[1] then
         local n = tonumber(args[1])
         if n then
-            flyState.speed = math.clamp(n, 10, 500)
-            flySpeedStepper.SetValue(flyState.speed)
+            S.fly.speed = math.clamp(n, 10, 500)
+            flySpeedStepper.SetValue(S.fly.speed)
         end
     end
     task.defer(function()
@@ -2932,23 +2945,23 @@ end
 -------------------------------------------------
 -- NOCLIP MECHANICS + PANEL
 -------------------------------------------------
-local noclipState = {
+S.noclip = {
     enabled = false,
     hotkey = Enum.KeyCode.N,
     connection = nil,
 }
 
 local function stopNoclip()
-    noclipState.enabled = false
-    if noclipState.connection then
-        noclipState.connection:Disconnect()
-        noclipState.connection = nil
+    S.noclip.enabled = false
+    if S.noclip.connection then
+        S.noclip.connection:Disconnect()
+        S.noclip.connection = nil
     end
 end
 
 local function startNoclip()
-    noclipState.enabled = true
-    noclipState.connection = RunService.Stepped:Connect(function()
+    S.noclip.enabled = true
+    S.noclip.connection = RunService.Stepped:Connect(function()
         local char = LocalPlayer.Character
         if not char then return end
         for _, part in ipairs(char:GetDescendants()) do
@@ -2979,9 +2992,9 @@ noclipToggle.OnToggle(function(enabled)
 end)
 
 createLabel("HOTKEY", noclipPanel.Content, UDim2.new(0, 0, 0, 46))
-local noclipHotkeyBtn = createHotkeyButton(noclipPanel.Content, UDim2.new(0, 0, 0, 62), noclipState.hotkey)
+local noclipHotkeyBtn = createHotkeyButton(noclipPanel.Content, UDim2.new(0, 0, 0, 62), S.noclip.hotkey)
 noclipHotkeyBtn.OnChange(function(newKey)
-    noclipState.hotkey = newKey
+    S.noclip.hotkey = newKey
     notify("Noclip hotkey set to " .. newKey.Name, "info", 2)
 end)
 
@@ -3009,7 +3022,7 @@ end
 -------------------------------------------------
 -- Extended ESP: highlight/chams, names, health bars, distance, boxes, skeletons.
 -- Each feature is independently toggleable. Color is configurable.
-local espState = {
+S.esp = {
     enabled = false,
     objects = {},   -- [player] = { highlight, billboard, skeleton={...}, box, ... }
     connections = {},
@@ -3044,20 +3057,20 @@ local ESP_BONE_PAIRS_R15 = {
 }
 
 local function clearESPForPlayer(player)
-    local objs = espState.objects[player]
+    local objs = S.esp.objects[player]
     if not objs then return end
     if objs.highlight and objs.highlight.Parent then objs.highlight:Destroy() end
     if objs.billboard and objs.billboard.Parent then objs.billboard:Destroy() end
     if objs.box and objs.box.Parent then objs.box:Destroy() end
     if objs.skeletonHolder and objs.skeletonHolder.Parent then objs.skeletonHolder:Destroy() end
-    espState.objects[player] = nil
+    S.esp.objects[player] = nil
 end
 
 local function clearESP()
-    for p in pairs(espState.objects) do
+    for p in pairs(S.esp.objects) do
         clearESPForPlayer(p)
     end
-    espState.objects = {}
+    S.esp.objects = {}
 end
 
 local function buildEspForPlayer(player)
@@ -3067,16 +3080,16 @@ local function buildEspForPlayer(player)
     clearESPForPlayer(player)
 
     local entry = {}
-    espState.objects[player] = entry
+    S.esp.objects[player] = entry
 
     -- Highlight (handles both highlight-only and chams styles)
-    if espState.options.highlight or espState.options.chams then
+    if S.esp.options.highlight or S.esp.options.chams then
         local h = Instance.new("Highlight")
-        h.FillColor = espState.options.color
-        h.OutlineColor = espState.options.color
-        h.FillTransparency = espState.options.chams and 0.4 or 0.8
+        h.FillColor = S.esp.options.color
+        h.OutlineColor = S.esp.options.color
+        h.FillTransparency = S.esp.options.chams and 0.4 or 0.8
         h.OutlineTransparency = 0.1
-        h.DepthMode = espState.options.chams
+        h.DepthMode = S.esp.options.chams
             and Enum.HighlightDepthMode.AlwaysOnTop
             or Enum.HighlightDepthMode.Occluded
         h.Parent = char
@@ -3085,7 +3098,7 @@ local function buildEspForPlayer(player)
 
     -- Name / Health / Distance billboard
     local head = char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart")
-    if head and (espState.options.names or espState.options.healthBars or espState.options.distance) then
+    if head and (S.esp.options.names or S.esp.options.healthBars or S.esp.options.distance) then
         local bb = Instance.new("BillboardGui")
         bb.Name = "UA_ESP_Info"
         bb.Size = UDim2.new(0, 180, 0, 44)
@@ -3094,14 +3107,14 @@ local function buildEspForPlayer(player)
         bb.LightInfluence = 0
         bb.Parent = head
 
-        if espState.options.names then
+        if S.esp.options.names then
             local nameLabel = Instance.new("TextLabel")
             nameLabel.Name = "Name"
             nameLabel.Size = UDim2.new(1, 0, 0, 14)
             nameLabel.Position = UDim2.new(0, 0, 0, 0)
             nameLabel.BackgroundTransparency = 1
             nameLabel.Text = player.DisplayName
-            nameLabel.TextColor3 = espState.options.color
+            nameLabel.TextColor3 = S.esp.options.color
             nameLabel.TextStrokeTransparency = 0.3
             nameLabel.TextSize = 13
             nameLabel.Font = Enum.Font.GothamBold
@@ -3109,7 +3122,7 @@ local function buildEspForPlayer(player)
             entry.nameLabel = nameLabel
         end
 
-        if espState.options.distance then
+        if S.esp.options.distance then
             local distLabel = Instance.new("TextLabel")
             distLabel.Name = "Distance"
             distLabel.Size = UDim2.new(1, 0, 0, 12)
@@ -3124,7 +3137,7 @@ local function buildEspForPlayer(player)
             entry.distLabel = distLabel
         end
 
-        if espState.options.healthBars then
+        if S.esp.options.healthBars then
             local barBg = Instance.new("Frame")
             barBg.Name = "HealthBg"
             barBg.Size = UDim2.new(0.7, 0, 0, 4)
@@ -3145,23 +3158,23 @@ local function buildEspForPlayer(player)
     end
 
     -- 2D box (ScreenGui with Frame, projected)
-    if espState.options.boxes then
-        if not espState.boxGui then
+    if S.esp.options.boxes then
+        if not S.esp.boxGui then
             local sg = Instance.new("ScreenGui")
             sg.Name = "UA_ESP_Boxes"
             sg.ResetOnSpawn = false
             sg.IgnoreGuiInset = true
             sg.DisplayOrder = 400
             sg.Parent = CoreGui
-            espState.boxGui = sg
+            S.esp.boxGui = sg
         end
         local box = Instance.new("Frame")
         box.Name = "Box_" .. player.Name
         box.BackgroundTransparency = 1
         box.BorderSizePixel = 0
-        box.Parent = espState.boxGui
+        box.Parent = S.esp.boxGui
         local stroke = Instance.new("UIStroke")
-        stroke.Color = espState.options.color
+        stroke.Color = S.esp.options.color
         stroke.Thickness = 1.5
         stroke.Transparency = 0.2
         stroke.Parent = box
@@ -3170,24 +3183,24 @@ local function buildEspForPlayer(player)
     end
 
     -- Skeleton (line segments between joints using Frames in 2D projection)
-    if espState.options.skeletons then
-        if not espState.skeletonGui then
+    if S.esp.options.skeletons then
+        if not S.esp.skeletonGui then
             local sg = Instance.new("ScreenGui")
             sg.Name = "UA_ESP_Skeleton"
             sg.ResetOnSpawn = false
             sg.IgnoreGuiInset = true
             sg.DisplayOrder = 399
             sg.Parent = CoreGui
-            espState.skeletonGui = sg
+            S.esp.skeletonGui = sg
         end
         local holder = Instance.new("Folder")
         holder.Name = "Skel_" .. player.Name
-        holder.Parent = espState.skeletonGui
+        holder.Parent = S.esp.skeletonGui
         entry.skeletonHolder = holder
         entry.skeletonLines = {}
         for _, pair in ipairs(ESP_BONE_PAIRS_R15) do
             local line = Instance.new("Frame")
-            line.BackgroundColor3 = espState.options.color
+            line.BackgroundColor3 = S.esp.options.color
             line.BorderSizePixel = 0
             line.AnchorPoint = Vector2.new(0, 0.5)
             line.Size = UDim2.new(0, 0, 0, 2)
@@ -3203,7 +3216,7 @@ local function updateEspRender()
     local myChar = LocalPlayer.Character
     local myHrp = myChar and myChar:FindFirstChild("HumanoidRootPart")
 
-    for player, entry in pairs(espState.objects) do
+    for player, entry in pairs(S.esp.objects) do
         local char = player.Character
         if not char then
             clearESPForPlayer(player)
@@ -3278,49 +3291,49 @@ local function updateEspRender()
 end
 
 local function startESP()
-    espState.enabled = true
+    S.esp.enabled = true
     for _, player in ipairs(Players:GetPlayers()) do
         buildEspForPlayer(player)
     end
-    espState.connections.added = Players.PlayerAdded:Connect(function(player)
+    S.esp.connections.added = Players.PlayerAdded:Connect(function(player)
         player.CharacterAdded:Connect(function()
             task.wait(0.5)
-            if espState.enabled then buildEspForPlayer(player) end
+            if S.esp.enabled then buildEspForPlayer(player) end
         end)
     end)
     for _, player in ipairs(Players:GetPlayers()) do
         if player ~= LocalPlayer then
             player.CharacterAdded:Connect(function()
                 task.wait(0.5)
-                if espState.enabled then buildEspForPlayer(player) end
+                if S.esp.enabled then buildEspForPlayer(player) end
             end)
         end
     end
-    espState.renderConn = RunService.RenderStepped:Connect(updateEspRender)
+    S.esp.renderConn = RunService.RenderStepped:Connect(updateEspRender)
 end
 
 local function stopESP()
-    espState.enabled = false
-    for _, conn in pairs(espState.connections) do
+    S.esp.enabled = false
+    for _, conn in pairs(S.esp.connections) do
         if conn then conn:Disconnect() end
     end
-    espState.connections = {}
-    if espState.renderConn then espState.renderConn:Disconnect() end
-    espState.renderConn = nil
+    S.esp.connections = {}
+    if S.esp.renderConn then S.esp.renderConn:Disconnect() end
+    S.esp.renderConn = nil
     clearESP()
-    if espState.boxGui and espState.boxGui.Parent then espState.boxGui:Destroy() end
-    espState.boxGui = nil
-    if espState.skeletonGui and espState.skeletonGui.Parent then espState.skeletonGui:Destroy() end
-    espState.skeletonGui = nil
+    if S.esp.boxGui and S.esp.boxGui.Parent then S.esp.boxGui:Destroy() end
+    S.esp.boxGui = nil
+    if S.esp.skeletonGui and S.esp.skeletonGui.Parent then S.esp.skeletonGui:Destroy() end
+    S.esp.skeletonGui = nil
 end
 
 local function rebuildEspIfEnabled()
-    if espState.enabled then
+    if S.esp.enabled then
         clearESP()
-        if espState.boxGui and espState.boxGui.Parent then espState.boxGui:Destroy() end
-        espState.boxGui = nil
-        if espState.skeletonGui and espState.skeletonGui.Parent then espState.skeletonGui:Destroy() end
-        espState.skeletonGui = nil
+        if S.esp.boxGui and S.esp.boxGui.Parent then S.esp.boxGui:Destroy() end
+        S.esp.boxGui = nil
+        if S.esp.skeletonGui and S.esp.skeletonGui.Parent then S.esp.skeletonGui:Destroy() end
+        S.esp.skeletonGui = nil
         for _, player in ipairs(Players:GetPlayers()) do
             buildEspForPlayer(player)
         end
@@ -3438,9 +3451,9 @@ do
     local function addFeature(label, key)
         createLabel(label, espScroll, UDim2.new(0, 0, 0, y))
         y = y + 16
-        local t = createToggleButton(espScroll, UDim2.new(0, 0, 0, y), espState.options[key])
+        local t = createToggleButton(espScroll, UDim2.new(0, 0, 0, y), S.esp.options[key])
         t.OnToggle(function(enabled)
-            espState.options[key] = enabled
+            S.esp.options[key] = enabled
             rebuildEspIfEnabled()
         end)
         y = y + 40
@@ -3492,7 +3505,7 @@ do
         })
         sw.MouseButton1Click:Connect(function()
             playClickSound()
-            espState.options.color = c
+            S.esp.options.color = c
             rebuildEspIfEnabled()
         end)
     end
@@ -3511,7 +3524,7 @@ end
 -------------------------------------------------
 -- INSTANT COMMANDS (no panel)
 -------------------------------------------------
-local godState = { enabled = false, connection = nil }
+S.god = { enabled = false, connection = nil }
 
 local function isResetArg(s)
     if not s then return false end
@@ -3773,8 +3786,8 @@ Commands["reset"].Execute = function()
 end
 
 Commands["god"].Execute = function()
-    godState.enabled = not godState.enabled
-    if godState.enabled then
+    S.god.enabled = not S.god.enabled
+    if S.god.enabled then
         local function applyGod()
             local char = LocalPlayer.Character
             if not char then return end
@@ -3785,15 +3798,15 @@ Commands["god"].Execute = function()
             end
         end
         applyGod()
-        godState.connection = LocalPlayer.CharacterAdded:Connect(function()
+        S.god.connection = LocalPlayer.CharacterAdded:Connect(function()
             task.wait(0.5)
-            if godState.enabled then applyGod() end
+            if S.god.enabled then applyGod() end
         end)
         notify("God mode enabled", "success", 2)
     else
-        if godState.connection then
-            godState.connection:Disconnect()
-            godState.connection = nil
+        if S.god.connection then
+            S.god.connection:Disconnect()
+            S.god.connection = nil
         end
         local char = LocalPlayer.Character
         if char then
@@ -3811,17 +3824,17 @@ end
 -- BUILD PANEL (modern btools replacement)
 -- Client-side raycast-driven delete/clone/color/spawn
 -------------------------------------------------
-local buildState = {
+S.build = {
     tool = nil, -- "delete" | "clone" | "color" | "spawn" | nil
     color = Color3.fromRGB(255, 255, 255),
     connections = {},
 }
 
 local function clearBuildConnections()
-    for _, c in ipairs(buildState.connections) do
+    for _, c in ipairs(S.build.connections) do
         if c then c:Disconnect() end
     end
-    buildState.connections = {}
+    S.build.connections = {}
 end
 
 local function raycastFromMouse()
@@ -3838,7 +3851,7 @@ local function raycastFromMouse()
 end
 
 local function handleBuildClick()
-    local tool = buildState.tool
+    local tool = S.build.tool
     if not tool then return end
     local hit = raycastFromMouse()
     if not hit or not hit.Instance then return end
@@ -3856,12 +3869,12 @@ local function handleBuildClick()
         copy.CFrame = part.CFrame + Vector3.new(0, part.Size.Y + 0.5, 0)
         copy.Parent = part.Parent
     elseif tool == "color" then
-        part.Color = buildState.color
+        part.Color = S.build.color
     elseif tool == "spawn" then
         local newPart = Instance.new("Part")
         newPart.Size = Vector3.new(4, 1, 4)
         newPart.Anchored = true
-        newPart.Color = buildState.color
+        newPart.Color = S.build.color
         newPart.Material = Enum.Material.SmoothPlastic
         newPart.CFrame = CFrame.new(hit.Position + Vector3.new(0, 0.5, 0))
         newPart.Parent = workspace
@@ -3869,10 +3882,10 @@ local function handleBuildClick()
 end
 
 local function setBuildTool(newTool)
-    buildState.tool = newTool
+    S.build.tool = newTool
     clearBuildConnections()
     if newTool then
-        table.insert(buildState.connections, UserInputService.InputBegan:Connect(function(input, gp)
+        table.insert(S.build.connections, UserInputService.InputBegan:Connect(function(input, gp)
             if gp then return end
             if input.UserInputType == Enum.UserInputType.MouseButton1 then
                 handleBuildClick()
@@ -3915,7 +3928,7 @@ local function makeBuildToolBtn(name, label, yPos)
     buildToolBtns[name] = btn
     btn.MouseButton1Click:Connect(function()
         playClickSound()
-        local newTool = buildState.tool == name and nil or name
+        local newTool = S.build.tool == name and nil or name
         setBuildTool(newTool)
         for n, b in pairs(buildToolBtns) do
             local active = (n == newTool)
@@ -3934,12 +3947,12 @@ local function makeBuildToolBtn(name, label, yPos)
         end
     end)
     btn.MouseEnter:Connect(function()
-        if buildState.tool ~= name then
+        if S.build.tool ~= name then
             tween(btn, quickTween, { BackgroundColor3 = Theme.SurfaceHover })
         end
     end)
     btn.MouseLeave:Connect(function()
-        if buildState.tool ~= name then
+        if S.build.tool ~= name then
             tween(btn, quickTween, { BackgroundColor3 = Theme.Surface })
         end
     end)
@@ -4002,7 +4015,7 @@ for i, color in ipairs(paletteColors) do
     if i == 1 then selectedSwatch = swatch end
     swatch.MouseButton1Click:Connect(function()
         playClickSound()
-        buildState.color = color
+        S.build.color = color
         if selectedSwatch then
             local s = selectedSwatch:FindFirstChildOfClass("UIStroke")
             if s then s.Color = Theme.Border; s.Thickness = 1 end
@@ -4061,7 +4074,7 @@ end
 -------------------------------------------------
 -- FLING / ANTIFLING
 -------------------------------------------------
-antiFlingState = antiFlingState or {
+S.antiFling = S.antiFling or {
     enabled = false,
     connection = nil,
     heartbeatConn = nil,
@@ -4072,14 +4085,14 @@ startAntiFling, stopAntiFling = startAntiFling, stopAntiFling
 
 -- Serialise fling operations so we never try to run two at once and end
 -- up with tangled camera/character state.
-local flingInProgress = false
+S.flingInProgress = false
 
 FLING_DATA = FLING_DATA or {
     timeout = 0.22, -- blink-fling collision window (needs >1 frame; anti-fling used to cancel spin)
     modes = { "blink", "slam", "hitbox" },
     labels = { blink = "Blink", slam = "Slam", hitbox = "Hitbox Expander" },
 }
-targetingState = targetingState or {
+S.targeting = S.targeting or {
     silent = false,
     velocityResolver = false,
     velocityCache = {},
@@ -4087,7 +4100,7 @@ targetingState = targetingState or {
 }
 
 local function flingPlayer(target, modeOverride)
-    if flingInProgress then
+    if S.flingInProgress then
         notify("Already flinging", "info", 1.5)
         return
     end
@@ -4106,10 +4119,10 @@ local function flingPlayer(target, modeOverride)
 
     local function getResolvedCFrame(tHrp)
         if not tHrp then return nil end
-        if not targetingState.velocityResolver then return tHrp.CFrame end
+        if not S.targeting.velocityResolver then return tHrp.CFrame end
         local key = tostring(target.UserId)
         local now = os.clock()
-        local cache = targetingState.velocityCache[key]
+        local cache = S.targeting.velocityCache[key]
         local predictedPos = tHrp.Position
         if cache then
             local dt = now - cache.t
@@ -4118,13 +4131,13 @@ local function flingPlayer(target, modeOverride)
                 local smoothVel = cache.vel and cache.vel:Lerp(rawVel, 0.35) or rawVel
                 local accel = cache.vel and ((smoothVel - cache.vel) / dt) or Vector3.zero
                 local dist = (tHrp.Position - myHrp.Position).Magnitude
-                local lead = math.clamp((targetingState.resolverLead or 0.12) + (dist / 3200), 0.1, 0.24)
+                local lead = math.clamp((S.targeting.resolverLead or 0.12) + (dist / 3200), 0.1, 0.24)
                 predictedPos = predictedPos + (smoothVel * lead) + (0.5 * accel * lead * lead)
-                targetingState.velocityCache[key] = { pos = tHrp.Position, t = now, vel = smoothVel }
+                S.targeting.velocityCache[key] = { pos = tHrp.Position, t = now, vel = smoothVel }
                 return CFrame.new(predictedPos) * (tHrp.CFrame - tHrp.CFrame.Position)
             end
         end
-        targetingState.velocityCache[key] = { pos = tHrp.Position, t = now, vel = Vector3.zero }
+        S.targeting.velocityCache[key] = { pos = tHrp.Position, t = now, vel = Vector3.zero }
         return CFrame.new(predictedPos) * (tHrp.CFrame - tHrp.CFrame.Position)
     end
 
@@ -4132,8 +4145,8 @@ local function flingPlayer(target, modeOverride)
     if myHrp.Anchored or targetHrp.Anchored then return false end
     if not targetHum or targetHum.Health <= 0 or myHum.Health <= 0 then return false end
 
-    flingInProgress = true
-    antiFlingState.suppressForFling = true
+    S.flingInProgress = true
+    S.antiFling.suppressForFling = true
 
     -- === SAVE STATE ===
     local savedCFrame = myHrp.CFrame
@@ -4158,7 +4171,7 @@ local function flingPlayer(target, modeOverride)
         cam.CFrame = savedCamCFrame
     end
     local camLockConn = cam and RunService.RenderStepped:Connect(function(dt)
-        if targetingState.silent then
+        if S.targeting.silent then
             local moveDir = myHum.MoveDirection
             if moveDir.Magnitude > 0.01 then
                 silentVisualCF = silentVisualCF + (moveDir.Unit * myHum.WalkSpeed * dt)
@@ -4176,7 +4189,7 @@ local function flingPlayer(target, modeOverride)
     silentSpoofConn = camLockConn
 
     pcall(function()
-        if not targetingState.silent then
+        if not S.targeting.silent then
             myHum:ChangeState(Enum.HumanoidStateType.Physics)
         elseif animateScript then
             -- Prevent local limb jitter while spoofing position every frame.
@@ -4222,7 +4235,7 @@ local function flingPlayer(target, modeOverride)
                     local resolved = getResolvedCFrame(tHrp) or tHrp.CFrame
                     myHrp.CFrame = resolved * orbit
                     pcall(function()
-                        myHrp.AssemblyLinearVelocity = targetingState.silent and Vector3.zero or Vector3.new(2600, 300, 2600)
+                        myHrp.AssemblyLinearVelocity = S.targeting.silent and Vector3.zero or Vector3.new(2600, 300, 2600)
                         myHrp.AssemblyAngularVelocity = Vector3.new(85000, 70000, 85000)
                     end)
                 elseif activeMode == "hitbox" then
@@ -4231,7 +4244,7 @@ local function flingPlayer(target, modeOverride)
                     myHrp.CFrame = resolved * CFrame.new(offset)
                     pcall(function()
                         myHrp.AssemblyAngularVelocity = Vector3.new(85000, 85000, 85000)
-                        myHrp.AssemblyLinearVelocity = targetingState.silent and Vector3.zero or Vector3.new(6000, 0, 6000)
+                        myHrp.AssemblyLinearVelocity = S.targeting.silent and Vector3.zero or Vector3.new(6000, 0, 6000)
                     end)
                 else
                     local offset = Vector3.new(math.random(-1, 1) * 0.1, 0, math.random(-1, 1) * 0.1)
@@ -4244,12 +4257,12 @@ local function flingPlayer(target, modeOverride)
                 end
                 RunService.Heartbeat:Wait()
                 pcall(function()
-                    local maxLinear = targetingState.silent and 60 or 180
-                    local maxAngular = targetingState.silent and 120000 or 180000
+                    local maxLinear = S.targeting.silent and 60 or 180
+                    local maxAngular = S.targeting.silent and 120000 or 180000
                     if myHrp.AssemblyLinearVelocity.Magnitude > maxLinear then
                         myHrp.AssemblyLinearVelocity = Vector3.zero
                     end
-                    if targetingState.silent then
+                    if S.targeting.silent then
                         myHrp.AssemblyLinearVelocity = Vector3.zero
                     end
                     if myHrp.AssemblyAngularVelocity.Magnitude > maxAngular then
@@ -4281,7 +4294,7 @@ local function flingPlayer(target, modeOverride)
                         myHrp.CFrame = resolved * offset
                         pcall(function()
                             myHrp.AssemblyAngularVelocity = Vector3.new(100000, 100000, 100000)
-                            myHrp.AssemblyLinearVelocity = targetingState.silent and Vector3.zero or Vector3.new(2600, 0, 2600)
+                            myHrp.AssemblyLinearVelocity = S.targeting.silent and Vector3.zero or Vector3.new(2600, 0, 2600)
                         end)
                         RunService.Heartbeat:Wait()
                         flung = detectSuccess(th, startPos)
@@ -4299,7 +4312,7 @@ local function flingPlayer(target, modeOverride)
     local flung = usedMode and true or false
 
     -- === INSTANT RESTORE ===
-    if myHrp and myHrp.Parent and not targetingState.silent then
+    if myHrp and myHrp.Parent and not S.targeting.silent then
         pcall(function()
             myHrp.AssemblyAngularVelocity = savedRotVelocity
             myHrp.AssemblyLinearVelocity = savedVelocity
@@ -4315,7 +4328,7 @@ local function flingPlayer(target, modeOverride)
             end)
         end
     end
-    if myHrp and myHrp.Parent and targetingState.silent then
+    if myHrp and myHrp.Parent and S.targeting.silent then
         local finalSilentCF = silentVisualCF
         pcall(function()
             myHrp.CFrame = finalSilentCF
@@ -4334,7 +4347,7 @@ local function flingPlayer(target, modeOverride)
     end
 
     pcall(function()
-        if not targetingState.silent then
+        if not S.targeting.silent then
             myHum:ChangeState(previousState)
         elseif animateScript and animateWasEnabled ~= nil then
             animateScript.Enabled = animateWasEnabled
@@ -4350,8 +4363,8 @@ local function flingPlayer(target, modeOverride)
         cam.CameraType    = savedCamType or Enum.CameraType.Custom
     end
 
-    flingInProgress = false
-    antiFlingState.suppressForFling = false
+    S.flingInProgress = false
+    S.antiFling.suppressForFling = false
 
     if not okMode then
         notify("Fling mode failed: " .. tostring(modeResult), "error", 2.2)
@@ -4359,7 +4372,7 @@ local function flingPlayer(target, modeOverride)
     end
 
     if flung then
-        if not targetingState.silent then
+        if not S.targeting.silent then
             notify("Flung " .. target.DisplayName .. " [" .. (FLING_DATA.labels[usedMode] or mode) .. "]", "success", 2)
         end
     end
@@ -4389,7 +4402,7 @@ Commands["fling"].Execute = function(args)
     end
 end
 
-local loopFlingState = {
+S.loopFling = {
     enabled = false,
     target = nil,
     mode = "blink",
@@ -4397,9 +4410,9 @@ local loopFlingState = {
 }
 
 local function updateLoopFlingIndicator()
-    if loopFlingState.enabled and loopFlingState.target and loopFlingState.target.Parent then
+    if S.loopFling.enabled and S.loopFling.target and S.loopFling.target.Parent then
         LoopFlingIndicator.Visible = true
-        LoopFlingIndicator.Text = "LOOPFLING: @" .. loopFlingState.target.Name
+        LoopFlingIndicator.Text = "LOOPFLING: @" .. S.loopFling.target.Name
         LoopFlingIndicator.TextColor3 = Color3.fromRGB(245, 183, 66)
     else
         LoopFlingIndicator.Visible = false
@@ -4407,23 +4420,23 @@ local function updateLoopFlingIndicator()
 end
 
 local function stopLoopFling()
-    loopFlingState.enabled = false
-    loopFlingState.target = nil
+    S.loopFling.enabled = false
+    S.loopFling.target = nil
     updateLoopFlingIndicator()
 end
 
 local function startLoopFling(target, mode)
-    loopFlingState.enabled = true
-    loopFlingState.target = target
-    loopFlingState.mode = mode or "blink"
+    S.loopFling.enabled = true
+    S.loopFling.target = target
+    S.loopFling.mode = mode or "blink"
     updateLoopFlingIndicator()
-    if loopFlingState.threadActive then
+    if S.loopFling.threadActive then
         return
     end
-    loopFlingState.threadActive = true
+    S.loopFling.threadActive = true
     task.spawn(function()
-        while loopFlingState.enabled do
-            local t = loopFlingState.target
+        while S.loopFling.enabled do
+            local t = S.loopFling.target
             if not t or not t.Parent or t == LocalPlayer then
                 stopLoopFling()
                 break
@@ -4433,12 +4446,12 @@ local function startLoopFling(target, mode)
             local movingFast = tHrp and tHrp.AssemblyLinearVelocity.Magnitude > 45
             if not movingFast then
                 pcall(function()
-                    flingPlayer(t, loopFlingState.mode)
+                    flingPlayer(t, S.loopFling.mode)
                 end)
             end
             task.wait(0.85)
         end
-        loopFlingState.threadActive = false
+        S.loopFling.threadActive = false
         updateLoopFlingIndicator()
     end)
 end
@@ -4787,14 +4800,14 @@ Commands["pkillfield"].Execute = function(args)
 end
 
 startAntiFling = function()
-    antiFlingState.enabled = true
+    S.antiFling.enabled = true
 
     -- Record a safe position we can teleport back to
     local char = LocalPlayer.Character
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
-    antiFlingState.safePos = hrp and hrp.CFrame or nil
-    antiFlingState.lastGoodPos = antiFlingState.safePos
-    antiFlingState.recovering = false
+    S.antiFling.safePos = hrp and hrp.CFrame or nil
+    S.antiFling.lastGoodPos = S.antiFling.safePos
+    S.antiFling.recovering = false
 
     local function isGrounded(cf)
         if not cf then return false end
@@ -4806,15 +4819,15 @@ startAntiFling = function()
     end
 
     local function getRecoveryCFrame(current)
-        local fallback = antiFlingState.lastGoodPos or antiFlingState.safePos or current
+        local fallback = S.antiFling.lastGoodPos or S.antiFling.safePos or current
         if not fallback then return nil end
         local basePos = fallback.Position + Vector3.new(0, 4, 0)
         return CFrame.new(basePos) * (fallback - fallback.Position)
     end
 
     -- Main loop: runs every physics step (before physics sim)
-    antiFlingState.connection = RunService.Stepped:Connect(function()
-        if antiFlingState.suppressForFling then
+    S.antiFling.connection = RunService.Stepped:Connect(function()
+        if S.antiFling.suppressForFling then
             return
         end
         local c = LocalPlayer.Character
@@ -4846,12 +4859,12 @@ startAntiFling = function()
         end
 
         -- 3) If we got displaced massively in one frame, snap back
-        if antiFlingState.safePos then
-            local dist = (h.Position - antiFlingState.safePos.Position).Magnitude
+        if S.antiFling.safePos then
+            local dist = (h.Position - S.antiFling.safePos.Position).Magnitude
             local fallenY = (workspace.FallenPartsDestroyHeight or -500) - 15
             local underMap = h.Position.Y < fallenY
             if dist > 90 or underMap then
-                antiFlingState.recovering = true
+                S.antiFling.recovering = true
                 local recoverCF = getRecoveryCFrame(h.CFrame)
                 pcall(function()
                     if recoverCF then
@@ -4861,24 +4874,24 @@ startAntiFling = function()
                     h.AssemblyAngularVelocity = Vector3.zero
                 end)
                 task.delay(0.2, function()
-                    antiFlingState.recovering = false
+                    S.antiFling.recovering = false
                 end)
             else
                 local speed = h.AssemblyLinearVelocity.Magnitude
-                if speed <= 55 and not antiFlingState.recovering and isGrounded(h.CFrame) then
-                    antiFlingState.safePos = h.CFrame
-                    antiFlingState.lastGoodPos = h.CFrame
+                if speed <= 55 and not S.antiFling.recovering and isGrounded(h.CFrame) then
+                    S.antiFling.safePos = h.CFrame
+                    S.antiFling.lastGoodPos = h.CFrame
                 end
             end
         else
-            antiFlingState.safePos = h.CFrame
-            antiFlingState.lastGoodPos = h.CFrame
+            S.antiFling.safePos = h.CFrame
+            S.antiFling.lastGoodPos = h.CFrame
         end
     end)
 
     -- Secondary loop: runs on Heartbeat (after physics) as a second pass
-    antiFlingState.heartbeatConn = RunService.Heartbeat:Connect(function()
-        if antiFlingState.suppressForFling then
+    S.antiFling.heartbeatConn = RunService.Heartbeat:Connect(function()
+        if S.antiFling.suppressForFling then
             return
         end
         local c = LocalPlayer.Character
@@ -4900,22 +4913,22 @@ startAntiFling = function()
 end
 
 stopAntiFling = function()
-    antiFlingState.enabled = false
-    if antiFlingState.connection then
-        antiFlingState.connection:Disconnect()
-        antiFlingState.connection = nil
+    S.antiFling.enabled = false
+    if S.antiFling.connection then
+        S.antiFling.connection:Disconnect()
+        S.antiFling.connection = nil
     end
-    if antiFlingState.heartbeatConn then
-        antiFlingState.heartbeatConn:Disconnect()
-        antiFlingState.heartbeatConn = nil
+    if S.antiFling.heartbeatConn then
+        S.antiFling.heartbeatConn:Disconnect()
+        S.antiFling.heartbeatConn = nil
     end
-    antiFlingState.safePos = nil
-    antiFlingState.lastGoodPos = nil
-    antiFlingState.recovering = false
+    S.antiFling.safePos = nil
+    S.antiFling.lastGoodPos = nil
+    S.antiFling.recovering = false
 end
 
 Commands["antifling"].Execute = function()
-    if antiFlingState.enabled then
+    if S.antiFling.enabled then
         stopAntiFling()
         notify("Anti-fling disabled", "info", 2)
     else
@@ -4925,7 +4938,7 @@ Commands["antifling"].Execute = function()
 end
 
 ;(function()
-local reverseState = {
+S.reverse = {
     enabled = false,
     samples = {},
     maxSeconds = 30,
@@ -4949,7 +4962,7 @@ local seekValueLabel = create("TextLabel", {
     Size = UDim2.new(0, 46, 0, 14),
     Position = UDim2.new(1, -46, 0, 62),
     BackgroundTransparency = 1,
-    Text = tostring(reverseState.seekSeconds) .. "s",
+    Text = tostring(S.reverse.seekSeconds) .. "s",
     TextColor3 = Theme.TextMuted,
     TextSize = 10,
     Font = Theme.Font,
@@ -4982,7 +4995,7 @@ local seekKnob = create("Frame", {
     Parent = seekBar,
 }, { create("UICorner", { CornerRadius = UDim.new(1, 0) }) })
 createLabel("REWIND MODE", reversePanel.Content, UDim2.new(0, 0, 0, 108))
-local modeCycle = createCycleButton(reversePanel.Content, UDim2.new(0, 0, 0, 124), { "instant", "smooth" }, reverseState.mode, function(v)
+local modeCycle = createCycleButton(reversePanel.Content, UDim2.new(0, 0, 0, 124), { "instant", "smooth" }, S.reverse.mode, function(v)
     return v == "smooth" and "SMOOTH" or "INSTANT"
 end)
 local rewindBtn = create("TextButton", {
@@ -5013,24 +5026,24 @@ local hint = create("TextLabel", {
     Parent = reversePanel.Content,
 })
 local function setSeekSeconds(sec)
-    reverseState.seekSeconds = math.clamp(math.floor((tonumber(sec) or 0) * 10 + 0.5) / 10, 0, reverseState.maxSeconds)
-    local pct = reverseState.seekSeconds / reverseState.maxSeconds
+    S.reverse.seekSeconds = math.clamp(math.floor((tonumber(sec) or 0) * 10 + 0.5) / 10, 0, S.reverse.maxSeconds)
+    local pct = S.reverse.seekSeconds / S.reverse.maxSeconds
     seekFill.Size = UDim2.new(pct, 0, 1, 0)
     seekKnob.Position = UDim2.new(pct, -5, 0.5, 0)
-    seekValueLabel.Text = string.format("%.1fs", reverseState.seekSeconds)
+    seekValueLabel.Text = string.format("%.1fs", S.reverse.seekSeconds)
 end
-setSeekSeconds(reverseState.seekSeconds)
+setSeekSeconds(S.reverse.seekSeconds)
 local seeking = false
 seekBar.InputBegan:Connect(function(input)
     if input.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
     seeking = true
     local pct = math.clamp((input.Position.X - seekBar.AbsolutePosition.X) / math.max(1, seekBar.AbsoluteSize.X), 0, 1)
-    setSeekSeconds(pct * reverseState.maxSeconds)
+    setSeekSeconds(pct * S.reverse.maxSeconds)
 end)
 UserInputService.InputChanged:Connect(function(input)
     if not seeking or input.UserInputType ~= Enum.UserInputType.MouseMovement then return end
     local pct = math.clamp((input.Position.X - seekBar.AbsolutePosition.X) / math.max(1, seekBar.AbsoluteSize.X), 0, 1)
-    setSeekSeconds(pct * reverseState.maxSeconds)
+    setSeekSeconds(pct * S.reverse.maxSeconds)
 end)
 UserInputService.InputEnded:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1 then
@@ -5041,15 +5054,15 @@ local function getSampleForSecondsBack(sec)
     local tNow = os.clock()
     local targetT = tNow - math.max(0, tonumber(sec) or 0)
     local best = nil
-    for i = #reverseState.samples, 1, -1 do
-        local s = reverseState.samples[i]
+    for i = #S.reverse.samples, 1, -1 do
+        local s = S.reverse.samples[i]
         if s and s.t <= targetT then
             best = s
             break
         end
     end
-    if not best and #reverseState.samples > 0 then
-        best = reverseState.samples[1]
+    if not best and #S.reverse.samples > 0 then
+        best = S.reverse.samples[1]
     end
     return best
 end
@@ -5060,7 +5073,7 @@ local function rewindNow(sec, mode)
         notify("Character missing", "warning", 2)
         return
     end
-    if #reverseState.samples == 0 then
+    if #S.reverse.samples == 0 then
         notify("No movement history yet", "warning", 2)
         return
     end
@@ -5086,34 +5099,34 @@ local function rewindNow(sec, mode)
     end)
 end
 local function startReverseRecord()
-    if reverseState.conn then return end
-    reverseState.conn = RunService.Heartbeat:Connect(function(dt)
-        reverseState.acc = reverseState.acc + dt
-        if reverseState.acc < reverseState.sampleEvery then return end
-        reverseState.acc = 0
+    if S.reverse.conn then return end
+    S.reverse.conn = RunService.Heartbeat:Connect(function(dt)
+        S.reverse.acc = S.reverse.acc + dt
+        if S.reverse.acc < S.reverse.sampleEvery then return end
+        S.reverse.acc = 0
         local char = LocalPlayer.Character
         local hrp = char and char:FindFirstChild("HumanoidRootPart")
         if not hrp then return end
-        table.insert(reverseState.samples, { t = os.clock(), cf = hrp.CFrame })
-        local cutoff = os.clock() - reverseState.maxSeconds
-        while #reverseState.samples > 0 and reverseState.samples[1].t < cutoff do
-            table.remove(reverseState.samples, 1)
+        table.insert(S.reverse.samples, { t = os.clock(), cf = hrp.CFrame })
+        local cutoff = os.clock() - S.reverse.maxSeconds
+        while #S.reverse.samples > 0 and S.reverse.samples[1].t < cutoff do
+            table.remove(S.reverse.samples, 1)
         end
     end)
 end
 local function stopReverseRecord()
-    if reverseState.conn then
-        reverseState.conn:Disconnect()
-        reverseState.conn = nil
+    if S.reverse.conn then
+        S.reverse.conn:Disconnect()
+        S.reverse.conn = nil
     end
 end
 _G.UA_stopReverse = function()
-    reverseState.enabled = false
+    S.reverse.enabled = false
     stopReverseRecord()
     pcall(function() reverseToggle.SetState(false) end)
 end
 reverseToggle.OnToggle(function(on)
-    reverseState.enabled = on
+    S.reverse.enabled = on
     if on then
         startReverseRecord()
         notify("Reverse recording enabled", "success", 2)
@@ -5123,24 +5136,24 @@ reverseToggle.OnToggle(function(on)
     end
 end)
 modeCycle.OnChange(function(v)
-    reverseState.mode = tostring(v or "instant")
+    S.reverse.mode = tostring(v or "instant")
 end)
 rewindBtn.MouseButton1Click:Connect(function()
     playClickSound()
-    rewindNow(reverseState.seekSeconds, reverseState.mode)
+    rewindNow(S.reverse.seekSeconds, S.reverse.mode)
 end)
 Commands["reverse"].Execute = function(args)
     if args and args[1] then
         local a = tostring(args[1]):lower()
         if a == "on" then
-            if not reverseState.enabled then
-                reverseState.enabled = true
+            if not S.reverse.enabled then
+                S.reverse.enabled = true
                 reverseToggle.SetState(true)
                 startReverseRecord()
             end
         elseif a == "off" then
-            if reverseState.enabled then
-                reverseState.enabled = false
+            if S.reverse.enabled then
+                S.reverse.enabled = false
                 reverseToggle.SetState(false)
                 stopReverseRecord()
             end
@@ -5148,7 +5161,7 @@ Commands["reverse"].Execute = function(args)
             local n = tonumber(args[1])
             if n then
                 setSeekSeconds(n)
-                rewindNow(reverseState.seekSeconds, reverseState.mode)
+                rewindNow(S.reverse.seekSeconds, S.reverse.mode)
             end
         end
     end
@@ -5157,32 +5170,32 @@ Commands["reverse"].Execute = function(args)
     end)
 end
 
-local antiAllState = { enabled = false, antivoidConn = nil, antichairConn = nil, lastSafe = nil, ownedAntiFling = false }
+S.antiAll = { enabled = false, antivoidConn = nil, antichairConn = nil, lastSafe = nil, ownedAntiFling = false }
 local function startAntiVoid()
-    if antiAllState.antivoidConn then return end
-    antiAllState.antivoidConn = RunService.Heartbeat:Connect(function()
+    if S.antiAll.antivoidConn then return end
+    S.antiAll.antivoidConn = RunService.Heartbeat:Connect(function()
         local char = LocalPlayer.Character
         local hrp = char and char:FindFirstChild("HumanoidRootPart")
         if not hrp then return end
         local y = hrp.Position.Y
         local threshold = (workspace.FallenPartsDestroyHeight or -500) + 18
         if y > threshold then
-            antiAllState.lastSafe = hrp.CFrame
+            S.antiAll.lastSafe = hrp.CFrame
             return
         end
-        local recover = antiAllState.lastSafe or CFrame.new(hrp.Position.X, threshold + 12, hrp.Position.Z)
+        local recover = S.antiAll.lastSafe or CFrame.new(hrp.Position.X, threshold + 12, hrp.Position.Z)
         hrp.CFrame = recover
         hrp.AssemblyLinearVelocity = Vector3.zero
         hrp.AssemblyAngularVelocity = Vector3.zero
     end)
 end
 local function stopAntiVoid()
-    if antiAllState.antivoidConn then antiAllState.antivoidConn:Disconnect() antiAllState.antivoidConn = nil end
-    antiAllState.lastSafe = nil
+    if S.antiAll.antivoidConn then S.antiAll.antivoidConn:Disconnect() S.antiAll.antivoidConn = nil end
+    S.antiAll.lastSafe = nil
 end
 local function startAntiChair()
-    if antiAllState.antichairConn then return end
-    antiAllState.antichairConn = RunService.Heartbeat:Connect(function()
+    if S.antiAll.antichairConn then return end
+    S.antiAll.antichairConn = RunService.Heartbeat:Connect(function()
         local char = LocalPlayer.Character
         local hum = char and char:FindFirstChildOfClass("Humanoid")
         if not hum then return end
@@ -5193,29 +5206,29 @@ local function startAntiChair()
     end)
 end
 local function stopAntiChair()
-    if antiAllState.antichairConn then antiAllState.antichairConn:Disconnect() antiAllState.antichairConn = nil end
+    if S.antiAll.antichairConn then S.antiAll.antichairConn:Disconnect() S.antiAll.antichairConn = nil end
 end
 local function startAntiAll()
-    if antiAllState.enabled then return end
-    antiAllState.enabled = true
+    if S.antiAll.enabled then return end
+    S.antiAll.enabled = true
     startAntiVoid()
     startAntiChair()
-    if not antiFlingState.enabled then
-        antiAllState.ownedAntiFling = true
+    if not S.antiFling.enabled then
+        S.antiAll.ownedAntiFling = true
         startAntiFling()
     else
-        antiAllState.ownedAntiFling = false
+        S.antiAll.ownedAntiFling = false
     end
     if type(setToggleState) == "function" then setToggleState("antiall", true) end
 end
 local function stopAntiAll()
-    antiAllState.enabled = false
+    S.antiAll.enabled = false
     stopAntiVoid()
     stopAntiChair()
-    if antiAllState.ownedAntiFling and antiFlingState.enabled then
+    if S.antiAll.ownedAntiFling and S.antiFling.enabled then
         stopAntiFling()
     end
-    antiAllState.ownedAntiFling = false
+    S.antiAll.ownedAntiFling = false
     if type(setToggleState) == "function" then setToggleState("antiall", false) end
 end
 _G.UA_stopAntiAll = function()
@@ -5233,7 +5246,7 @@ Commands["antiall"].Execute = function(args)
         notify("Anti-All disabled", "info", 2)
         return
     end
-    if antiAllState.enabled then
+    if S.antiAll.enabled then
         stopAntiAll()
         notify("Anti-All disabled", "info", 2)
     else
@@ -5250,7 +5263,7 @@ end)()
 -- 2) trigger bind flings the closest player to your cursor once
 -- Includes mode selector plus silent/resolver toggles.
 -------------------------------------------------
-clickFlingState = clickFlingState or {
+S.clickFling = S.clickFling or {
     enabled   = false,
     bind      = Enum.KeyCode.E,
     triggerBind = Enum.KeyCode.R,
@@ -5261,35 +5274,35 @@ clickFlingState = clickFlingState or {
     screenGui  = nil,
 }
 if type(persistedConfig.clickFlingMode) == "string" and FLING_DATA.labels[persistedConfig.clickFlingMode] then
-    clickFlingState.mode = persistedConfig.clickFlingMode
+    S.clickFling.mode = persistedConfig.clickFlingMode
 end
 if type(persistedConfig.clickFlingBind) == "string" and Enum.KeyCode[persistedConfig.clickFlingBind] then
-    clickFlingState.bind = Enum.KeyCode[persistedConfig.clickFlingBind]
+    S.clickFling.bind = Enum.KeyCode[persistedConfig.clickFlingBind]
 end
 if type(persistedConfig.clickFlingTriggerBind) == "string" and Enum.KeyCode[persistedConfig.clickFlingTriggerBind] then
-    clickFlingState.triggerBind = Enum.KeyCode[persistedConfig.clickFlingTriggerBind]
+    S.clickFling.triggerBind = Enum.KeyCode[persistedConfig.clickFlingTriggerBind]
 end
 
 local function stopClickFling()
-    clickFlingState.enabled = false
-    if clickFlingState.renderConn then clickFlingState.renderConn:Disconnect() end
-    if clickFlingState.inputConn  then clickFlingState.inputConn:Disconnect()  end
-    clickFlingState.renderConn = nil
-    clickFlingState.inputConn  = nil
-    if clickFlingState.circle and clickFlingState.circle.Parent then
-        clickFlingState.circle:Destroy()
+    S.clickFling.enabled = false
+    if S.clickFling.renderConn then S.clickFling.renderConn:Disconnect() end
+    if S.clickFling.inputConn  then S.clickFling.inputConn:Disconnect()  end
+    S.clickFling.renderConn = nil
+    S.clickFling.inputConn  = nil
+    if S.clickFling.circle and S.clickFling.circle.Parent then
+        S.clickFling.circle:Destroy()
     end
-    if clickFlingState.screenGui and clickFlingState.screenGui.Parent then
-        clickFlingState.screenGui:Destroy()
+    if S.clickFling.screenGui and S.clickFling.screenGui.Parent then
+        S.clickFling.screenGui:Destroy()
     end
-    clickFlingState.circle = nil
-    clickFlingState.screenGui = nil
+    S.clickFling.circle = nil
+    S.clickFling.screenGui = nil
 end
 
 local function startClickFling()
-    if clickFlingState.enabled then return end
-    clickFlingState.enabled = true
-    notify("Click-fling enabled — press " .. clickFlingState.triggerBind.Name .. " to fling closest to cursor", "success", 2)
+    if S.clickFling.enabled then return end
+    S.clickFling.enabled = true
+    notify("Click-fling enabled — press " .. S.clickFling.triggerBind.Name .. " to fling closest to cursor", "success", 2)
 end
 
 local function getClosestPlayerToMouse()
@@ -5342,47 +5355,47 @@ local clickFlingModeCycle = createCycleButton(
     clickFlingPanel.Content,
     UDim2.new(0, 0, 0, 75),
     FLING_DATA.modes,
-    clickFlingState.mode,
+    S.clickFling.mode,
     function(v) return FLING_DATA.labels[v] or v end
 )
 clickFlingModeCycle.OnChange(function(newMode)
-    clickFlingState.mode = newMode
+    S.clickFling.mode = newMode
     persistedConfig.clickFlingMode = newMode
     savePersistedConfig()
     notify("Click-fling mode: " .. (FLING_DATA.labels[newMode] or newMode), "info", 2)
 end)
 
 createLabel("TOGGLE BIND", clickFlingPanel.Content, UDim2.new(0, 0, 0, 113))
-local clickFlingBindBtn = createHotkeyButton(clickFlingPanel.Content, UDim2.new(0, 0, 0, 129), clickFlingState.bind)
+local clickFlingBindBtn = createHotkeyButton(clickFlingPanel.Content, UDim2.new(0, 0, 0, 129), S.clickFling.bind)
 clickFlingBindBtn.OnChange(function(newKey)
-    clickFlingState.bind = newKey
+    S.clickFling.bind = newKey
     persistedConfig.clickFlingBind = newKey.Name
     savePersistedConfig()
     notify("Click-fling bind set to " .. newKey.Name, "info", 2)
 end)
 
 createLabel("FLING TRIGGER BIND", clickFlingPanel.Content, UDim2.new(0, 0, 0, 167))
-local clickFlingTriggerBindBtn = createHotkeyButton(clickFlingPanel.Content, UDim2.new(0, 0, 0, 183), clickFlingState.triggerBind)
+local clickFlingTriggerBindBtn = createHotkeyButton(clickFlingPanel.Content, UDim2.new(0, 0, 0, 183), S.clickFling.triggerBind)
 clickFlingTriggerBindBtn.OnChange(function(newKey)
-    clickFlingState.triggerBind = newKey
+    S.clickFling.triggerBind = newKey
     persistedConfig.clickFlingTriggerBind = newKey.Name
     savePersistedConfig()
     notify("Click-fling trigger bind set to " .. newKey.Name, "info", 2)
 end)
 
 createLabel("SILENT MODE", clickFlingPanel.Content, UDim2.new(0, 0, 0, 221))
-local silentToggle = createToggleButton(clickFlingPanel.Content, UDim2.new(0, 0, 0, 237), targetingState.silent)
+local silentToggle = createToggleButton(clickFlingPanel.Content, UDim2.new(0, 0, 0, 237), S.targeting.silent)
 silentToggle.OnToggle(function(enabled)
-    targetingState.silent = enabled
+    S.targeting.silent = enabled
     setToggleState("silent", enabled)
     notify("Silent mode " .. (enabled and "enabled" or "disabled"), "info", 2)
 end)
 
 createLabel("VELOCITY RESOLVER", clickFlingPanel.Content, UDim2.new(0, 0, 0, 275))
-local resolverToggle = createToggleButton(clickFlingPanel.Content, UDim2.new(0, 0, 0, 291), targetingState.velocityResolver)
+local resolverToggle = createToggleButton(clickFlingPanel.Content, UDim2.new(0, 0, 0, 291), S.targeting.velocityResolver)
 resolverToggle.OnToggle(function(enabled)
-    targetingState.velocityResolver = enabled
-    if not enabled then targetingState.velocityCache = {} end
+    S.targeting.velocityResolver = enabled
+    if not enabled then S.targeting.velocityCache = {} end
     setToggleState("resolver", enabled)
     notify("Velocity resolver " .. (enabled and "enabled" or "disabled"), "info", 2)
 end)
@@ -5421,10 +5434,10 @@ end
 -------------------------------------------------
 -- SPECTATE / FREECAM
 -------------------------------------------------
-local spectateState = { target = nil, showCard = true, cardGui = nil, cardConn = nil }
-local freecamState = { enabled = false, connection = nil, cf = nil }
+S.spectate = { target = nil, showCard = true, cardGui = nil, cardConn = nil }
+S.freecam = { enabled = false, connection = nil, cf = nil }
 
-spectateState.parseBoolArg = function(raw, defaultValue)
+S.spectate.parseBoolArg = function(raw, defaultValue)
     if raw == nil then return defaultValue end
     local v = tostring(raw):lower()
     if v == "true" or v == "on" or v == "1" or v == "yes" then return true end
@@ -5432,19 +5445,19 @@ spectateState.parseBoolArg = function(raw, defaultValue)
     return defaultValue
 end
 
-spectateState.destroyCard = function()
-    if spectateState.cardConn then
-        spectateState.cardConn:Disconnect()
-        spectateState.cardConn = nil
+S.spectate.destroyCard = function()
+    if S.spectate.cardConn then
+        S.spectate.cardConn:Disconnect()
+        S.spectate.cardConn = nil
     end
-    if spectateState.cardGui and spectateState.cardGui.Parent then
-        spectateState.cardGui:Destroy()
+    if S.spectate.cardGui and S.spectate.cardGui.Parent then
+        S.spectate.cardGui:Destroy()
     end
-    spectateState.cardGui = nil
+    S.spectate.cardGui = nil
 end
 
-spectateState.buildCard = function(target)
-    spectateState.destroyCard()
+S.spectate.buildCard = function(target)
+    S.spectate.destroyCard()
     local gui = Instance.new("ScreenGui")
     gui.Name = "UniversalAdmin_SpectateCard"
     gui.ResetOnSpawn = false
@@ -5489,10 +5502,10 @@ spectateState.buildCard = function(target)
         Parent = card,
     })
 
-    spectateState.cardGui = gui
-    spectateState.cardConn = RunService.Heartbeat:Connect(function()
-        if not spectateState.target or spectateState.target ~= target then
-            spectateState.destroyCard()
+    S.spectate.cardGui = gui
+    S.spectate.cardConn = RunService.Heartbeat:Connect(function()
+        if not S.spectate.target or S.spectate.target ~= target then
+            S.spectate.destroyCard()
             return
         end
         local tChar = target.Character
@@ -5516,7 +5529,7 @@ spectateState.buildCard = function(target)
 end
 
 local function stopSpectate()
-    if spectateState.target then
+    if S.spectate.target then
         local cam = workspace.CurrentCamera
         if cam and LocalPlayer.Character then
             local myHum = LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
@@ -5524,9 +5537,9 @@ local function stopSpectate()
                 cam.CameraSubject = myHum
             end
         end
-        spectateState.target = nil
+        S.spectate.target = nil
     end
-    spectateState.destroyCard()
+    S.spectate.destroyCard()
 end
 
 Commands["spectate"].Execute = function(args)
@@ -5546,25 +5559,25 @@ Commands["spectate"].Execute = function(args)
     local cam = workspace.CurrentCamera
     if cam then
         cam.CameraSubject = hum
-        spectateState.target = target
-        local showCard = spectateState.parseBoolArg(args[2], persistedConfig.spectateCard ~= false)
-        spectateState.showCard = showCard
+        S.spectate.target = target
+        local showCard = S.spectate.parseBoolArg(args[2], persistedConfig.spectateCard ~= false)
+        S.spectate.showCard = showCard
         persistedConfig.spectateCard = showCard
         savePersistedConfig()
         if showCard then
-            spectateState.buildCard(target)
+            S.spectate.buildCard(target)
         else
-            spectateState.destroyCard()
+            S.spectate.destroyCard()
         end
         notify("Spectating " .. target.DisplayName .. (showCard and " (card on)" or " (card off)"), "success", 2)
     end
 end
 
 local function stopFreecam()
-    freecamState.enabled = false
-    if freecamState.connection then
-        freecamState.connection:Disconnect()
-        freecamState.connection = nil
+    S.freecam.enabled = false
+    if S.freecam.connection then
+        S.freecam.connection:Disconnect()
+        S.freecam.connection = nil
     end
     local cam = workspace.CurrentCamera
     if cam then
@@ -5579,15 +5592,15 @@ end
 local function startFreecam()
     local cam = workspace.CurrentCamera
     if not cam then return end
-    freecamState.enabled = true
-    freecamState.cf = cam.CFrame
+    S.freecam.enabled = true
+    S.freecam.cf = cam.CFrame
     cam.CameraType = Enum.CameraType.Scriptable
-    freecamState.connection = RunService.RenderStepped:Connect(function(dt)
-        if not freecamState.enabled then return end
+    S.freecam.connection = RunService.RenderStepped:Connect(function(dt)
+        if not S.freecam.enabled then return end
         local speed = 50 * dt
         if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then speed = speed * 3 end
         local moveDir = Vector3.new(0, 0, 0)
-        local cf = freecamState.cf
+        local cf = S.freecam.cf
         if UserInputService:IsKeyDown(Enum.KeyCode.W) then moveDir = moveDir + cf.LookVector end
         if UserInputService:IsKeyDown(Enum.KeyCode.S) then moveDir = moveDir - cf.LookVector end
         if UserInputService:IsKeyDown(Enum.KeyCode.A) then moveDir = moveDir - cf.RightVector end
@@ -5595,13 +5608,13 @@ local function startFreecam()
         if UserInputService:IsKeyDown(Enum.KeyCode.E) then moveDir = moveDir + Vector3.new(0, 1, 0) end
         if UserInputService:IsKeyDown(Enum.KeyCode.Q) then moveDir = moveDir - Vector3.new(0, 1, 0) end
         if moveDir.Magnitude > 0 then moveDir = moveDir.Unit end
-        freecamState.cf = cf + moveDir * speed
-        cam.CFrame = freecamState.cf
+        S.freecam.cf = cf + moveDir * speed
+        cam.CFrame = S.freecam.cf
     end)
 end
 
 Commands["freecam"].Execute = function()
-    if freecamState.enabled then
+    if S.freecam.enabled then
         stopFreecam()
         notify("Freecam off", "info", 2)
     else
@@ -6468,37 +6481,37 @@ Commands["chat"].Execute = function(args)
     end
 end
 
-local hideCharState = { hidden = false, savedTransparency = {} }
+S.hideChar = { hidden = false, savedTransparency = {} }
 Commands["hidechar"].Execute = function()
     local char = LocalPlayer.Character
     if not char then error("No character") end
-    if hideCharState.hidden then
-        for part, t in pairs(hideCharState.savedTransparency) do
+    if S.hideChar.hidden then
+        for part, t in pairs(S.hideChar.savedTransparency) do
             if part and part.Parent then
                 pcall(function() part.LocalTransparencyModifier = t end)
             end
         end
-        hideCharState.savedTransparency = {}
-        hideCharState.hidden = false
+        S.hideChar.savedTransparency = {}
+        S.hideChar.hidden = false
         notify("Character shown", "info", 2)
     else
-        hideCharState.savedTransparency = {}
+        S.hideChar.savedTransparency = {}
         for _, d in ipairs(char:GetDescendants()) do
             if d:IsA("BasePart") or d:IsA("Decal") then
-                hideCharState.savedTransparency[d] = d.LocalTransparencyModifier
+                S.hideChar.savedTransparency[d] = d.LocalTransparencyModifier
                 pcall(function() d.LocalTransparencyModifier = 1 end)
             end
         end
-        hideCharState.hidden = true
+        S.hideChar.hidden = true
         notify("Character hidden locally", "success", 2)
     end
 end
 
-local hideUIState = { hidden = false }
+S.hideUI = { hidden = false }
 Commands["hideui"].Execute = function()
-    hideUIState.hidden = not hideUIState.hidden
-    ScreenGui.Enabled = not hideUIState.hidden
-    if not hideUIState.hidden then
+    S.hideUI.hidden = not S.hideUI.hidden
+    ScreenGui.Enabled = not S.hideUI.hidden
+    if not S.hideUI.hidden then
         notify("UI shown", "info", 2)
     end
 end
@@ -7379,7 +7392,7 @@ end
 
 local function watchAlertEvents(player)
     player.CharacterAdded:Connect(function()
-        if spectateState.target == player and persistedConfig.alerts.spectateRespawn ~= false then
+        if S.spectate.target == player and persistedConfig.alerts.spectateRespawn ~= false then
             if reportAlertEvent then
                 reportAlertEvent(player.DisplayName .. " respawned while spectating")
             else
@@ -7441,6 +7454,7 @@ Commands["unload"].Execute = function()
         -- Stop all toggles best-effort
         pcall(function() if stopFly then stopFly() end end)
         pcall(function() if stopNoclip then stopNoclip() end end)
+        pcall(function() if stopSpider then stopSpider() end end)
         pcall(function() if stopESP then stopESP() end end)
         pcall(function() if stopClickFling then stopClickFling() end end)
         pcall(function() if stopSpectate then stopSpectate() end end)
@@ -7510,31 +7524,31 @@ end
 -- a configurable bind key via its own panel.
 -------------------------------------------------
 ;(function()
-local clickTpState = {
+S.clickTp = {
     enabled = false,
     bind    = Enum.KeyCode.T,
     conn    = nil,
 }
 
 local function stopClickTp()
-    clickTpState.enabled = false
-    if clickTpState.conn then clickTpState.conn:Disconnect() end
-    clickTpState.conn = nil
+    S.clickTp.enabled = false
+    if S.clickTp.conn then S.clickTp.conn:Disconnect() end
+    S.clickTp.conn = nil
     setToggleState("clicktp", false)
 end
 
 local function startClickTp()
-    if clickTpState.enabled then return end
-    clickTpState.enabled = true
+    if S.clickTp.enabled then return end
+    S.clickTp.enabled = true
     setToggleState("clicktp", true)
-    clickTpState.conn = UserInputService.InputBegan:Connect(function(input, gp)
+    S.clickTp.conn = UserInputService.InputBegan:Connect(function(input, gp)
         if gp then return end
         if input.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
         -- Check modifier/bind: require bind key to be held while clicking.
         -- If bind is None, accept any click.
         local heldOk = true
-        if clickTpState.bind and clickTpState.bind ~= Enum.KeyCode.Unknown then
-            heldOk = UserInputService:IsKeyDown(clickTpState.bind)
+        if S.clickTp.bind and S.clickTp.bind ~= Enum.KeyCode.Unknown then
+            heldOk = UserInputService:IsKeyDown(S.clickTp.bind)
         end
         if not heldOk then return end
         local char = LocalPlayer.Character
@@ -7569,7 +7583,7 @@ local clickTpToggle = createToggleButton(clickTpPanel.Content, UDim2.new(0, 0, 0
 clickTpToggle.OnToggle(function(enabled)
     if enabled then
         startClickTp()
-        notify("Click-teleport enabled (hold " .. clickTpState.bind.Name .. " + click)", "success", 3)
+        notify("Click-teleport enabled (hold " .. S.clickTp.bind.Name .. " + click)", "success", 3)
     else
         stopClickTp()
         notify("Click-teleport disabled", "info", 2)
@@ -7577,9 +7591,9 @@ clickTpToggle.OnToggle(function(enabled)
 end)
 
 createLabel("BIND (hold + click to TP)", clickTpPanel.Content, UDim2.new(0, 0, 0, 60))
-local clickTpBindBtn = createHotkeyButton(clickTpPanel.Content, UDim2.new(0, 0, 0, 76), clickTpState.bind)
+local clickTpBindBtn = createHotkeyButton(clickTpPanel.Content, UDim2.new(0, 0, 0, 76), S.clickTp.bind)
 clickTpBindBtn.OnChange(function(newKey)
-    clickTpState.bind = newKey
+    S.clickTp.bind = newKey
     notify("Click-TP bind: hold " .. newKey.Name .. " + click", "info", 2)
 end)
 
@@ -7608,7 +7622,7 @@ end)()
 -- FULLBRIGHT
 -------------------------------------------------
 ;(function()
-local fullbrightState = {
+S.fullbright = {
     enabled = false,
     savedBrightness = nil,
     savedAmbient = nil,
@@ -7620,31 +7634,31 @@ local fullbrightState = {
 }
 
 local function stopFullbright()
-    fullbrightState.enabled = false
+    S.fullbright.enabled = false
     setToggleState("fullbright", false)
-    if fullbrightState.conn then fullbrightState.conn:Disconnect() end
-    fullbrightState.conn = nil
+    if S.fullbright.conn then S.fullbright.conn:Disconnect() end
+    S.fullbright.conn = nil
     local Lighting = game:GetService("Lighting")
     pcall(function()
-        if fullbrightState.savedBrightness ~= nil then Lighting.Brightness = fullbrightState.savedBrightness end
-        if fullbrightState.savedAmbient ~= nil then Lighting.Ambient = fullbrightState.savedAmbient end
-        if fullbrightState.savedOutdoor ~= nil then Lighting.OutdoorAmbient = fullbrightState.savedOutdoor end
-        if fullbrightState.savedFogEnd ~= nil then Lighting.FogEnd = fullbrightState.savedFogEnd end
-        if fullbrightState.savedGlobalShadows ~= nil then Lighting.GlobalShadows = fullbrightState.savedGlobalShadows end
-        if fullbrightState.savedClockTime ~= nil then Lighting.ClockTime = fullbrightState.savedClockTime end
+        if S.fullbright.savedBrightness ~= nil then Lighting.Brightness = S.fullbright.savedBrightness end
+        if S.fullbright.savedAmbient ~= nil then Lighting.Ambient = S.fullbright.savedAmbient end
+        if S.fullbright.savedOutdoor ~= nil then Lighting.OutdoorAmbient = S.fullbright.savedOutdoor end
+        if S.fullbright.savedFogEnd ~= nil then Lighting.FogEnd = S.fullbright.savedFogEnd end
+        if S.fullbright.savedGlobalShadows ~= nil then Lighting.GlobalShadows = S.fullbright.savedGlobalShadows end
+        if S.fullbright.savedClockTime ~= nil then Lighting.ClockTime = S.fullbright.savedClockTime end
     end)
 end
 
 local function startFullbright()
-    fullbrightState.enabled = true
+    S.fullbright.enabled = true
     setToggleState("fullbright", true)
     local Lighting = game:GetService("Lighting")
-    fullbrightState.savedBrightness    = Lighting.Brightness
-    fullbrightState.savedAmbient       = Lighting.Ambient
-    fullbrightState.savedOutdoor       = Lighting.OutdoorAmbient
-    fullbrightState.savedFogEnd        = Lighting.FogEnd
-    fullbrightState.savedGlobalShadows = Lighting.GlobalShadows
-    fullbrightState.savedClockTime     = Lighting.ClockTime
+    S.fullbright.savedBrightness    = Lighting.Brightness
+    S.fullbright.savedAmbient       = Lighting.Ambient
+    S.fullbright.savedOutdoor       = Lighting.OutdoorAmbient
+    S.fullbright.savedFogEnd        = Lighting.FogEnd
+    S.fullbright.savedGlobalShadows = Lighting.GlobalShadows
+    S.fullbright.savedClockTime     = Lighting.ClockTime
 
     local function apply()
         Lighting.Brightness      = 2
@@ -7656,14 +7670,14 @@ local function startFullbright()
     end
     pcall(apply)
     -- Hold it against games that re-apply lighting every frame
-    fullbrightState.conn = RunService.RenderStepped:Connect(function()
-        if not fullbrightState.enabled then return end
+    S.fullbright.conn = RunService.RenderStepped:Connect(function()
+        if not S.fullbright.enabled then return end
         pcall(apply)
     end)
 end
 
 Commands["fullbright"].Execute = function()
-    if fullbrightState.enabled then
+    if S.fullbright.enabled then
         stopFullbright()
         notify("Fullbright off", "info", 2)
     else
@@ -7678,28 +7692,28 @@ end
 -- Requires the executor to provide hookmetamethod + getnamecallmethod.
 -- Output goes to the console via `print` - user can pipe to rconsole too.
 -------------------------------------------------
-local remoteSpyState = { enabled = false, oldNamecall = nil }
+S.remoteSpy = { enabled = false, oldNamecall = nil }
 
 local function stopRemoteSpy()
-    remoteSpyState.enabled = false
+    S.remoteSpy.enabled = false
     setToggleState("remotespy", false)
     -- Note: hookmetamethod cannot be cleanly unhooked on most executors
     -- without the original ref. We leave the flag off so the hook passes through.
 end
 
 local function startRemoteSpy()
-    if remoteSpyState.enabled then return end
+    if S.remoteSpy.enabled then return end
     if type(hookmetamethod) ~= "function" or type(getnamecallmethod) ~= "function" then
         error("remotespy requires executor with hookmetamethod + getnamecallmethod")
     end
-    remoteSpyState.enabled = true
+    S.remoteSpy.enabled = true
     setToggleState("remotespy", true)
 
-    if not remoteSpyState.hooked then
-        remoteSpyState.hooked = true
+    if not S.remoteSpy.hooked then
+        S.remoteSpy.hooked = true
         local old
         old = hookmetamethod(game, "__namecall", function(self, ...)
-            if remoteSpyState.enabled then
+            if S.remoteSpy.enabled then
                 local method = getnamecallmethod()
                 if method == "FireServer" or method == "InvokeServer" then
                     local ok, path = pcall(function() return self:GetFullName() end)
@@ -7718,12 +7732,12 @@ local function startRemoteSpy()
             end
             return old(self, ...)
         end)
-        remoteSpyState.oldNamecall = old
+        S.remoteSpy.oldNamecall = old
     end
 end
 
 Commands["remotespy"].Execute = function()
-    if remoteSpyState.enabled then
+    if S.remoteSpy.enabled then
         stopRemoteSpy()
         notify("Remote spy off", "info", 2)
     else
@@ -7739,9 +7753,9 @@ end
 -------------------------------------------------
 -- DEX EXPLORER
 -------------------------------------------------
-local dexState = { loaded = false }
+S.dex = { loaded = false }
 local function loadDex()
-    if dexState.loaded then
+    if S.dex.loaded then
         notify("Dex already loaded", "info", 2)
         return
     end
@@ -7749,7 +7763,7 @@ local function loadDex()
         loadstring(game:HttpGet("https://rawscripts.net/raw/Universal-Script-SECURE-DEX-AND-REMOTE-SPY-205256"))()
     end)
     if ok then
-        dexState.loaded = true
+        S.dex.loaded = true
         notify("Dex explorer loaded", "success", 3)
     else
         notify("Dex load failed: " .. tostring(err), "error", 4)
@@ -7763,14 +7777,14 @@ end)()
 -- CHAT LOG
 -------------------------------------------------
 ;(function()
-local chatLogState = {
+S.chatLog = {
     entries = {},  -- { { player, name, text, time, timestamp } }
     conns = {},
 }
 
 local function addChatEntry(player, text)
     if not player or not text then return end
-    table.insert(chatLogState.entries, {
+    table.insert(S.chatLog.entries, {
         player = player,
         name = player.Name,
         display = player.DisplayName,
@@ -7779,15 +7793,15 @@ local function addChatEntry(player, text)
         timestamp = os.time(),
     })
     -- Cap history at 500 to keep memory bounded
-    if #chatLogState.entries > 500 then
-        table.remove(chatLogState.entries, 1)
+    if #S.chatLog.entries > 500 then
+        table.remove(S.chatLog.entries, 1)
     end
 end
 
 -- Hook legacy Chatted signal for every player
 local function hookPlayerChat(player)
-    if chatLogState.conns[player] then return end
-    chatLogState.conns[player] = player.Chatted:Connect(function(msg)
+    if S.chatLog.conns[player] then return end
+    S.chatLog.conns[player] = player.Chatted:Connect(function(msg)
         addChatEntry(player, msg)
     end)
 end
@@ -7795,9 +7809,9 @@ end
 for _, p in ipairs(Players:GetPlayers()) do hookPlayerChat(p) end
 Players.PlayerAdded:Connect(hookPlayerChat)
 Players.PlayerRemoving:Connect(function(p)
-    if chatLogState.conns[p] then
-        chatLogState.conns[p]:Disconnect()
-        chatLogState.conns[p] = nil
+    if S.chatLog.conns[p] then
+        S.chatLog.conns[p]:Disconnect()
+        S.chatLog.conns[p] = nil
     end
 end)
 
@@ -7854,8 +7868,8 @@ local function refreshChatLog(query)
     end
     local i = 0
     -- Newest first
-    for idx = #chatLogState.entries, 1, -1 do
-        local e = chatLogState.entries[idx]
+    for idx = #S.chatLog.entries, 1, -1 do
+        local e = S.chatLog.entries[idx]
         local show = true
         if nameFilter and nameFilter ~= "" then
             show = e.name:lower():find(nameFilter, 1, true) ~= nil
@@ -7943,19 +7957,19 @@ end)()
 -- ANTI-AFK
 -------------------------------------------------
 ;(function()
-local antiAfkState = { enabled = false, conn = nil }
+S.antiAfk = { enabled = false, conn = nil }
 
 local function stopAntiAfk()
-    antiAfkState.enabled = false
+    S.antiAfk.enabled = false
     setToggleState("antiafk", false)
-    if antiAfkState.conn then antiAfkState.conn:Disconnect() end
-    antiAfkState.conn = nil
+    if S.antiAfk.conn then S.antiAfk.conn:Disconnect() end
+    S.antiAfk.conn = nil
 end
 
 local function startAntiAfk()
-    antiAfkState.enabled = true
+    S.antiAfk.enabled = true
     setToggleState("antiafk", true)
-    antiAfkState.conn = LocalPlayer.Idled:Connect(function()
+    S.antiAfk.conn = LocalPlayer.Idled:Connect(function()
         local VirtualUser = game:GetService("VirtualUser")
         pcall(function()
             VirtualUser:CaptureController()
@@ -7965,7 +7979,7 @@ local function startAntiAfk()
 end
 
 Commands["antiafk"].Execute = function()
-    if antiAfkState.enabled then
+    if S.antiAfk.enabled then
         stopAntiAfk()
         notify("Anti-AFK off", "info", 2)
     else
@@ -8252,10 +8266,10 @@ end)()
 -- sit so the server thinks we're in a seat far away. Togglable.
 -------------------------------------------------
 ;(function()
-    local invisSeatState = { enabled = false, seat = nil, weld = nil }
+    S.invisSeat = { enabled = false, seat = nil, weld = nil }
 
     local function stopInvisSeat()
-        invisSeatState.enabled = false
+        S.invisSeat.enabled = false
         setToggleState("invis", false)
         pcall(function()
             local myChar = LocalPlayer.Character
@@ -8267,14 +8281,14 @@ end)()
                 end
             end
         end)
-        if invisSeatState.weld and invisSeatState.weld.Parent then
-            invisSeatState.weld:Destroy()
+        if S.invisSeat.weld and S.invisSeat.weld.Parent then
+            S.invisSeat.weld:Destroy()
         end
-        invisSeatState.weld = nil
-        if invisSeatState.seat and invisSeatState.seat.Parent then
-            invisSeatState.seat:Destroy()
+        S.invisSeat.weld = nil
+        if S.invisSeat.seat and S.invisSeat.seat.Parent then
+            S.invisSeat.seat:Destroy()
         end
-        invisSeatState.seat = nil
+        S.invisSeat.seat = nil
     end
 
     local function startInvisSeat()
@@ -8327,14 +8341,14 @@ end)()
         seat.Anchored = false
         seat.CFrame = CFrame.new(0, 1e6, 0)
 
-        invisSeatState.seat = seat
-        invisSeatState.enabled = true
+        S.invisSeat.seat = seat
+        S.invisSeat.enabled = true
         setToggleState("invis", true)
         return true
     end
 
     Commands["invis"].Execute = function()
-        if invisSeatState.enabled then
+        if S.invisSeat.enabled then
             stopInvisSeat()
             notify("Invisibility off", "info", 2)
         else
@@ -8350,19 +8364,19 @@ end -- do (new toggleable commands scope)
 -------------------------------------------------
 -- INFINITE JUMP
 -------------------------------------------------
-local infJumpState = { enabled = false, connection = nil }
+S.infJump = { enabled = false, connection = nil }
 
 Commands["infjump"].Execute = function()
-    if infJumpState.enabled then
-        infJumpState.enabled = false
-        if infJumpState.connection then
-            infJumpState.connection:Disconnect()
-            infJumpState.connection = nil
+    if S.infJump.enabled then
+        S.infJump.enabled = false
+        if S.infJump.connection then
+            S.infJump.connection:Disconnect()
+            S.infJump.connection = nil
         end
         notify("Infinite jump disabled", "info", 2)
     else
-        infJumpState.enabled = true
-        infJumpState.connection = UserInputService.JumpRequest:Connect(function()
+        S.infJump.enabled = true
+        S.infJump.connection = UserInputService.JumpRequest:Connect(function()
             local char = LocalPlayer.Character
             if not char then return end
             local humanoid = char:FindFirstChildOfClass("Humanoid")
@@ -8375,56 +8389,135 @@ Commands["infjump"].Execute = function()
 end
 
 -------------------------------------------------
+-- SPIDER / WALL CLIMB
+-------------------------------------------------
+S.spider = { enabled = false, speed = 30, conn = nil }
+
+local function startSpider()
+    S.spider.enabled = true
+    if S.spider.conn then S.spider.conn:Disconnect() end
+    S.spider.conn = RunService.Heartbeat:Connect(function(dt)
+        local char = LocalPlayer.Character
+        if not char then return end
+        local hrp = char:FindFirstChild("HumanoidRootPart")
+        if not hrp then return end
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if not hum or hum:GetState() == Enum.HumanoidStateType.Climbing then return end
+
+        -- Check what direction the player is trying to move
+        local moveDir = hum.MoveDirection
+        if moveDir.Magnitude < 0.01 then return end
+
+        -- Raycast forward from HRP in movement direction
+        local origin = hrp.Position + Vector3.new(0, 1.5, 0)
+        local rayDir = moveDir * 3
+        local rayParams = RaycastParams.new()
+        rayParams.FilterType = Enum.RaycastFilterType.Exclude
+        rayParams.FilterDescendantsInstances = { char }
+        local result = workspace:Raycast(origin, rayDir, rayParams)
+
+        if result and result.Instance then
+            local hitNormal = result.Normal
+            -- Only climb near-vertical surfaces (ignore floors)
+            if math.abs(hitNormal.Y) < 0.4 then
+                local surfaceNormal = hitNormal
+                local upForce = Vector3.new(0, S.spider.speed, 0)
+                -- Push outward slightly so they don't clip into the wall
+                local pushOut = surfaceNormal * 2
+                hrp.AssemblyLinearVelocity = upForce + pushOut + Vector3.new(0, hrp.AssemblyLinearVelocity.Y * 0.1, 0)
+                -- Counter gravity by setting humanoid state
+                if hum:GetState() ~= Enum.HumanoidStateType.Freefall then
+                    -- Nudge them up each frame
+                end
+            end
+        end
+    end)
+end
+
+local function stopSpider()
+    S.spider.enabled = false
+    if S.spider.conn then
+        S.spider.conn:Disconnect()
+        S.spider.conn = nil
+    end
+end
+
+Commands["spider"].Execute = function(args)
+    local first = args and args[1] and tostring(args[1])
+    if first == "off" or first == "stop" then
+        if S.spider.enabled then
+            stopSpider()
+            notify("Spider climb disabled", "info", 2)
+        else
+            notify("Spider climb is not active", "info", 2)
+        end
+        return
+    end
+    if first and tonumber(first) then
+        S.spider.speed = math.clamp(tonumber(first), 10, 80)
+        notify("Spider climb speed set to " .. tostring(S.spider.speed), "success", 2)
+        return
+    end
+    if S.spider.enabled then
+        stopSpider()
+        notify("Spider climb disabled", "info", 2)
+    else
+        startSpider()
+        notify("Spider climb enabled (speed: " .. tostring(S.spider.speed) .. ")", "success", 2)
+    end
+end
+
+-------------------------------------------------
 -- LOCAL INVISIBILITY
 -------------------------------------------------
-local invisState = { enabled = false, saved = {} }
+S.invis = { enabled = false, saved = {} }
 
 Commands["invisible"].Execute = function()
     local char = LocalPlayer.Character
     if not char then error("No character") end
 
-    if invisState.enabled then
-        for part, transparency in pairs(invisState.saved) do
+    if S.invis.enabled then
+        for part, transparency in pairs(S.invis.saved) do
             if part and part.Parent then
                 part.LocalTransparencyModifier = transparency
             end
         end
-        invisState.saved = {}
-        invisState.enabled = false
+        S.invis.saved = {}
+        S.invis.enabled = false
         notify("Invisibility disabled", "info", 2)
         return
     end
 
-    invisState.saved = {}
+    S.invis.saved = {}
     for _, desc in ipairs(char:GetDescendants()) do
         if desc:IsA("BasePart") or desc:IsA("Decal") then
-            invisState.saved[desc] = desc.LocalTransparencyModifier
+            S.invis.saved[desc] = desc.LocalTransparencyModifier
             desc.LocalTransparencyModifier = 1
         end
     end
-    invisState.enabled = true
+    S.invis.enabled = true
     notify("Invisibility enabled (client-side only)", "success", 2)
 end
 
 -------------------------------------------------
 -- TRAIL
 -------------------------------------------------
-local trailState = { enabled = false, attachments = {}, trail = nil }
+S.trail = { enabled = false, attachments = {}, trail = nil }
 
 local function clearTrail()
-    if trailState.trail and trailState.trail.Parent then
-        trailState.trail:Destroy()
+    if S.trail.trail and S.trail.trail.Parent then
+        S.trail.trail:Destroy()
     end
-    for _, att in ipairs(trailState.attachments) do
+    for _, att in ipairs(S.trail.attachments) do
         if att and att.Parent then att:Destroy() end
     end
-    trailState.trail = nil
-    trailState.attachments = {}
+    S.trail.trail = nil
+    S.trail.attachments = {}
 end
 
 Commands["trail"].Execute = function()
-    if trailState.enabled then
-        trailState.enabled = false
+    if S.trail.enabled then
+        S.trail.enabled = false
         clearTrail()
         notify("Trail disabled", "info", 2)
         return
@@ -8465,19 +8558,19 @@ Commands["trail"].Execute = function()
     trail.LightEmission = 1
     trail.Parent = hrp
 
-    trailState.attachments = { att1, att2 }
-    trailState.trail = trail
-    trailState.enabled = true
+    S.trail.attachments = { att1, att2 }
+    S.trail.trail = trail
+    S.trail.enabled = true
     notify("Trail enabled", "success", 2)
 end
 
 -------------------------------------------------
 -- HITBOX EXPANDER
 -------------------------------------------------
-hitboxState = rawget(_G, "UA_hitboxState")
-if type(hitboxState) ~= "table" then
-    hitboxState = { enabled = false, size = 10, connection = nil }
-    _G.UA_hitboxState = hitboxState
+S.hitbox = rawget(_G, "UA_hitboxState")
+if type(S.hitbox) ~= "table" then
+    S.hitbox = { enabled = false, size = 10, connection = nil }
+    _G.UA_hitboxState = S.hitbox
 end
 
 ;(function()
@@ -8508,15 +8601,15 @@ local function resetHitboxes()
 end
 
 local function startHitbox(size)
-    hitboxState.size = size or hitboxState.size
-    hitboxState.enabled = true
-    applyHitboxes(hitboxState.size)
-    hitboxState.connection = RunService.Heartbeat:Connect(function()
+    S.hitbox.size = size or S.hitbox.size
+    S.hitbox.enabled = true
+    applyHitboxes(S.hitbox.size)
+    S.hitbox.connection = RunService.Heartbeat:Connect(function()
         for _, player in ipairs(Players:GetPlayers()) do
             if player ~= LocalPlayer and player.Character then
                 local hrp = player.Character:FindFirstChild("HumanoidRootPart")
-                if hrp and hrp.Size.X ~= hitboxState.size then
-                    hrp.Size = Vector3.new(hitboxState.size, hitboxState.size, hitboxState.size)
+                if hrp and hrp.Size.X ~= S.hitbox.size then
+                    hrp.Size = Vector3.new(S.hitbox.size, S.hitbox.size, S.hitbox.size)
                     hrp.Transparency = 1
                     hrp.CanCollide = false
                 end
@@ -8526,22 +8619,22 @@ local function startHitbox(size)
 end
 
 local function stopHitbox()
-    hitboxState.enabled = false
-    if hitboxState.connection then
-        hitboxState.connection:Disconnect()
-        hitboxState.connection = nil
+    S.hitbox.enabled = false
+    if S.hitbox.connection then
+        S.hitbox.connection:Disconnect()
+        S.hitbox.connection = nil
     end
     resetHitboxes()
 end
 
 Commands["hitbox"].Execute = function(args)
-    if hitboxState.enabled then
+    if S.hitbox.enabled then
         if args and args[1] then
             local n = tonumber(args[1])
             if n then
-                hitboxState.size = math.clamp(n, 2, 50)
-                applyHitboxes(hitboxState.size)
-                notify("Hitbox size set to " .. hitboxState.size, "info", 2)
+                S.hitbox.size = math.clamp(n, 2, 50)
+                applyHitboxes(S.hitbox.size)
+                notify("Hitbox size set to " .. S.hitbox.size, "info", 2)
                 return
             end
         end
@@ -8567,7 +8660,7 @@ end)()
 -------------------------------------------------
 ;(function()
 
-local camlockState = {
+S.camlock = {
     armed = false,
     target = nil,
     hotkey = Enum.KeyCode.J,
@@ -8590,7 +8683,7 @@ local camlockState = {
     aimZoomFov = 78,
     _savedAimFov = nil,
 }
-_G.UA_camlockState = camlockState
+_G.UA_camlockState = S.camlock
 
 local CAMLOCK_RS_NAME = "UniversalAdminCamlock"
 -- New crosshair pick must be this many pixels closer (screen space) to switch targets — reduces flicker.
@@ -8598,7 +8691,7 @@ local CROSSHAIR_SWITCH_MARGIN = 36
 
 local function getCamlockAimPart(character)
     if not character then return nil end
-    local h = camlockState.hitPart
+    local h = S.camlock.hitPart
     if h == "Head" then
         return character:FindFirstChild("Head") or character:FindFirstChild("HumanoidRootPart")
     elseif h == "UpperTorso" then
@@ -8640,10 +8733,10 @@ local function getPlayerClosestToCrosshair()
 end
 
 local function camlockAimHoldPressed()
-    if camlockState.aimHoldUseMouse then
-        return UserInputService:IsMouseButtonPressed(camlockState.aimHoldMouseButton)
+    if S.camlock.aimHoldUseMouse then
+        return UserInputService:IsMouseButtonPressed(S.camlock.aimHoldMouseButton)
     end
-    return UserInputService:IsKeyDown(camlockState.aimHoldKey)
+    return UserInputService:IsKeyDown(S.camlock.aimHoldKey)
 end
 
 local function angleDegLookToWorldPoint(cam, worldPos)
@@ -8655,20 +8748,20 @@ local function angleDegLookToWorldPoint(cam, worldPos)
 end
 
 local function camlockTargetInAimCone(cam, worldPos)
-    local half = camlockState.aimConeDeg * 0.5
+    local half = S.camlock.aimConeDeg * 0.5
     return angleDegLookToWorldPoint(cam, worldPos) <= half + 0.35
 end
 
 -- Master armed + have target + user holding aim bind (camera / silent applies only then).
 local function camlockShouldApply()
-    if not camlockState.armed or not camlockState.target then return false end
+    if not S.camlock.armed or not S.camlock.target then return false end
     return camlockAimHoldPressed()
 end
 
 updateCamlockTargetLabel = function()
-    local lbl = camlockState.targetStatusLabel
+    local lbl = S.camlock.targetStatusLabel
     if not lbl then return end
-    local t = camlockState.target
+    local t = S.camlock.target
     if t and t.Parent and t.Character then
         lbl.Text = "Target: " .. t.DisplayName
     else
@@ -8694,29 +8787,29 @@ pickNearestCamlockTarget = function()
 end
 
 stopCamlock = function()
-    camlockState.armed = false
-    camlockState.target = nil
-    camlockState.smoothedAimWorld = nil
-    camlockState._prevAimHold = false
-    if camlockState._savedAimFov ~= nil then
+    S.camlock.armed = false
+    S.camlock.target = nil
+    S.camlock.smoothedAimWorld = nil
+    S.camlock._prevAimHold = false
+    if S.camlock._savedAimFov ~= nil then
         local c = workspace.CurrentCamera
         if c then
-            c.FieldOfView = camlockState._savedAimFov
+            c.FieldOfView = S.camlock._savedAimFov
         end
-        camlockState._savedAimFov = nil
+        S.camlock._savedAimFov = nil
     end
     pcall(function()
         RunService:UnbindFromRenderStep(CAMLOCK_RS_NAME)
     end)
     setToggleState("camlock", false)
-    if camlockState.uiToggle then
-        camlockState.uiToggle.SetState(false)
+    if S.camlock.uiToggle then
+        S.camlock.uiToggle.SetState(false)
     end
     updateCamlockTargetLabel()
 end
 
 startCamlock = function(target)
-    if camlockState.armed then stopCamlock() end
+    if S.camlock.armed then stopCamlock() end
 
     local targetChar = target.Character
     if not targetChar then
@@ -8724,11 +8817,11 @@ startCamlock = function(target)
         return false
     end
 
-    camlockState.armed = true
-    camlockState.target = target
+    S.camlock.armed = true
+    S.camlock.target = target
     setToggleState("camlock", true)
-    if camlockState.uiToggle then
-        camlockState.uiToggle.SetState(true)
+    if S.camlock.uiToggle then
+        S.camlock.uiToggle.SetState(true)
     end
     updateCamlockTargetLabel()
 
@@ -8736,7 +8829,7 @@ startCamlock = function(target)
         RunService:UnbindFromRenderStep(CAMLOCK_RS_NAME)
     end)
     RunService:BindToRenderStep(CAMLOCK_RS_NAME, Enum.RenderPriority.Last.Value, function(dt)
-        if not camlockState.armed then return end
+        if not S.camlock.armed then return end
         local cam = workspace.CurrentCamera
         if not cam then return end
 
@@ -8744,14 +8837,14 @@ startCamlock = function(target)
         if holdNow then
             local cand, candDist = getPlayerClosestToCrosshair()
             if cand then
-                if not camlockState._prevAimHold then
-                    if camlockState.target ~= cand then
-                        camlockState.target = cand
-                        camlockState.smoothedAimWorld = nil
+                if not S.camlock._prevAimHold then
+                    if S.camlock.target ~= cand then
+                        S.camlock.target = cand
+                        S.camlock.smoothedAimWorld = nil
                         updateCamlockTargetLabel()
                     end
                 else
-                    local cur = camlockState.target
+                    local cur = S.camlock.target
                     if cur ~= cand then
                         local curDist = math.huge
                         if cur and cur.Character then
@@ -8761,17 +8854,17 @@ startCamlock = function(target)
                             end
                         end
                         if candDist <= curDist - CROSSHAIR_SWITCH_MARGIN then
-                            camlockState.target = cand
-                            camlockState.smoothedAimWorld = nil
+                            S.camlock.target = cand
+                            S.camlock.smoothedAimWorld = nil
                             updateCamlockTargetLabel()
                         end
                     end
                 end
             end
         end
-        camlockState._prevAimHold = holdNow
+        S.camlock._prevAimHold = holdNow
 
-        local tPlayer = camlockState.target
+        local tPlayer = S.camlock.target
         local tChar = tPlayer and tPlayer.Character
         if not tChar or not tChar.Parent then
             stopCamlock()
@@ -8788,29 +8881,29 @@ startCamlock = function(target)
         local applyCorrection = inCone
 
         if applyCorrection then
-            if not camlockState.smoothedAimWorld then
-                camlockState.smoothedAimWorld = rawPos
+            if not S.camlock.smoothedAimWorld then
+                S.camlock.smoothedAimWorld = rawPos
             else
                 local posRate = math.clamp(9 * dt, 0, 1)
-                camlockState.smoothedAimWorld = camlockState.smoothedAimWorld:Lerp(rawPos, posRate)
+                S.camlock.smoothedAimWorld = S.camlock.smoothedAimWorld:Lerp(rawPos, posRate)
             end
         else
-            camlockState.smoothedAimWorld = nil
+            S.camlock.smoothedAimWorld = nil
         end
 
-        if camlockState.aimZoomEnabled and applyCorrection then
-            if camlockState._savedAimFov == nil then
-                camlockState._savedAimFov = cam.FieldOfView
+        if S.camlock.aimZoomEnabled and applyCorrection then
+            if S.camlock._savedAimFov == nil then
+                S.camlock._savedAimFov = cam.FieldOfView
             end
-            cam.FieldOfView = camlockState.aimZoomFov
-        elseif camlockState._savedAimFov ~= nil then
-            cam.FieldOfView = camlockState._savedAimFov
-            camlockState._savedAimFov = nil
+            cam.FieldOfView = S.camlock.aimZoomFov
+        elseif S.camlock._savedAimFov ~= nil then
+            cam.FieldOfView = S.camlock._savedAimFov
+            S.camlock._savedAimFov = nil
         end
 
-        local aimPos = (applyCorrection and camlockState.smoothedAimWorld) or rawPos
+        local aimPos = (applyCorrection and S.camlock.smoothedAimWorld) or rawPos
 
-        if camlockState.silent then
+        if S.camlock.silent then
             if applyCorrection then
                 local mouse = LocalPlayer:GetMouse()
                 if mouse then
@@ -8822,8 +8915,8 @@ startCamlock = function(target)
                             mouse.Hit = lookAt
                             mouse.Target = targetPart
                         end)
-                        if not ok and not camlockState.silentMouseWarned then
-                            camlockState.silentMouseWarned = true
+                        if not ok and not S.camlock.silentMouseWarned then
+                            S.camlock.silentMouseWarned = true
                             notify("Silent aim: Mouse.Hit not writable here", "warning", 4)
                         end
                     end
@@ -8837,7 +8930,7 @@ startCamlock = function(target)
                 else
                     local camPos = cam.CFrame.Position
                     local desiredCF = CFrame.lookAt(camPos, aimPos)
-                    local k = math.clamp(camlockState.smoothStrength, 0.25, 40)
+                    local k = math.clamp(S.camlock.smoothStrength, 0.25, 40)
                     local alpha = 1 - math.exp(-k * dt)
                     if alpha < 0.001 then alpha = 0.001 end
                     cam.CFrame = cam.CFrame:Lerp(desiredCF, alpha)
@@ -8851,7 +8944,7 @@ end
 
 Commands["camlock"].Execute = function(args)
     if not args or not args[1] then
-        if camlockState.armed then
+        if S.camlock.armed then
             stopCamlock()
             notify("Aim assist disarmed", "info", 2)
             return
@@ -8896,7 +8989,7 @@ camlockFovBox = create("Frame", {
 
 RunService.RenderStepped:Connect(function()
     if not camlockFovBox.Parent then return end
-    if not camlockState.fovBoxVisible then
+    if not S.camlock.fovBoxVisible then
         camlockFovBox.Visible = false
         return
     end
@@ -8906,7 +8999,7 @@ RunService.RenderStepped:Connect(function()
     local vy = math.max(camera.ViewportSize.Y, 1)
     local vx = math.max(camera.ViewportSize.X, 1)
     local vHalf = math.rad(camera.FieldOfView * 0.5)
-    local coneHalf = math.rad(math.clamp(camlockState.aimConeDeg * 0.5, 0.08, 89))
+    local coneHalf = math.rad(math.clamp(S.camlock.aimConeDeg * 0.5, 0.08, 89))
     local tanV = math.tan(vHalf)
     if tanV < 1e-4 then tanV = 1e-4 end
     local halfPx = (vy * 0.5) * math.tan(coneHalf) / tanV
@@ -8928,14 +9021,14 @@ aimbotPanel = (function()
     local camlockState = _G.UA_camlockState
 
     local function aimHoldBindLabel()
-        if camlockState.aimHoldUseMouse then
-            local m = camlockState.aimHoldMouseButton
+        if S.camlock.aimHoldUseMouse then
+            local m = S.camlock.aimHoldMouseButton
             if m == Enum.UserInputType.MouseButton1 then return "LMB" end
             if m == Enum.UserInputType.MouseButton2 then return "RMB" end
             if m == Enum.UserInputType.MouseButton3 then return "MMB" end
             return tostring(m.Name)
         end
-        return camlockState.aimHoldKey.Name
+        return S.camlock.aimHoldKey.Name
     end
 
     local function createAimHoldBinder(parentFrame, position)
@@ -8983,13 +9076,13 @@ aimbotPanel = (function()
                 local conn
                 conn = UserInputService.InputBegan:Connect(function(input, _)
                     if input.UserInputType == Enum.UserInputType.Keyboard then
-                        camlockState.aimHoldUseMouse = false
-                        camlockState.aimHoldKey = input.KeyCode
+                        S.camlock.aimHoldUseMouse = false
+                        S.camlock.aimHoldKey = input.KeyCode
                     elseif input.UserInputType == Enum.UserInputType.MouseButton1
                         or input.UserInputType == Enum.UserInputType.MouseButton2
                         or input.UserInputType == Enum.UserInputType.MouseButton3 then
-                        camlockState.aimHoldUseMouse = true
-                        camlockState.aimHoldMouseButton = input.UserInputType
+                        S.camlock.aimHoldUseMouse = true
+                        S.camlock.aimHoldMouseButton = input.UserInputType
                     elseif input.UserInputType == Enum.UserInputType.MouseMovement then
                         return
                     else
@@ -9007,11 +9100,11 @@ aimbotPanel = (function()
         return { Refresh = function() btn.Text = aimHoldBindLabel() end }
     end
 
-    local camlockMasterToggle = createToggleButton(panel.Content, UDim2.new(0, 0, 0, 4), camlockState.armed)
-    camlockState.uiToggle = camlockMasterToggle
+    local camlockMasterToggle = createToggleButton(panel.Content, UDim2.new(0, 0, 0, 4), S.camlock.armed)
+    S.camlock.uiToggle = camlockMasterToggle
     camlockMasterToggle.OnToggle(function(enabled)
         if enabled then
-            if camlockState.armed then return end
+            if S.camlock.armed then return end
             local t = pickNearestCamlockTarget()
             if t then
                 if not startCamlock(t) then
@@ -9024,14 +9117,14 @@ aimbotPanel = (function()
                 notify("No target in range", "warning", 2)
             end
         else
-            if camlockState.armed then
+            if S.camlock.armed then
                 stopCamlock()
                 notify("Aimbot disarmed", "info", 2)
             end
         end
     end)
 
-    camlockState.targetStatusLabel = create("TextLabel", {
+    S.camlock.targetStatusLabel = create("TextLabel", {
         Size = UDim2.new(1, 0, 0, 18),
         Position = UDim2.new(0, 0, 0, 40),
         BackgroundTransparency = 1,
@@ -9047,38 +9140,38 @@ aimbotPanel = (function()
     createLabel("AIM SMOOTH (low = smooth, high = snappy)", panel.Content, UDim2.new(0, 0, 0, 64))
     local sensStep = createStepper(panel.Content, UDim2.new(0, 0, 0, 80), 20, 1, 100, 1)
     sensStep.OnChange(function(v)
-        camlockState.smoothStrength = math.clamp(v * 0.2, 0.15, 25)
+        S.camlock.smoothStrength = math.clamp(v * 0.2, 0.15, 25)
     end)
 
     createLabel("AIM CONE ° (pull only inside this)", panel.Content, UDim2.new(0, 0, 0, 112))
-    local coneStep = createStepper(panel.Content, UDim2.new(0, 0, 0, 128), camlockState.aimConeDeg, 10, 100, 1)
+    local coneStep = createStepper(panel.Content, UDim2.new(0, 0, 0, 128), S.camlock.aimConeDeg, 10, 100, 1)
     coneStep.OnChange(function(v)
-        camlockState.aimConeDeg = v
+        S.camlock.aimConeDeg = v
     end)
 
     createLabel("SHOW FOV BOX", panel.Content, UDim2.new(0, 0, 0, 168))
-    local fovBoxTog = createToggleButton(panel.Content, UDim2.new(0, 0, 0, 184), camlockState.fovBoxVisible)
+    local fovBoxTog = createToggleButton(panel.Content, UDim2.new(0, 0, 0, 184), S.camlock.fovBoxVisible)
     fovBoxTog.OnToggle(function(on)
-        camlockState.fovBoxVisible = on
+        S.camlock.fovBoxVisible = on
     end)
 
     createLabel("ZOOM FOV WHILE PULLING", panel.Content, UDim2.new(0, 0, 0, 228))
-    local zoomPullTog = createToggleButton(panel.Content, UDim2.new(0, 0, 0, 244), camlockState.aimZoomEnabled)
+    local zoomPullTog = createToggleButton(panel.Content, UDim2.new(0, 0, 0, 244), S.camlock.aimZoomEnabled)
     zoomPullTog.OnToggle(function(on)
-        camlockState.aimZoomEnabled = on
-        if not on and camlockState._savedAimFov ~= nil then
+        S.camlock.aimZoomEnabled = on
+        if not on and S.camlock._savedAimFov ~= nil then
             local c = workspace.CurrentCamera
             if c then
-                c.FieldOfView = camlockState._savedAimFov
+                c.FieldOfView = S.camlock._savedAimFov
             end
-            camlockState._savedAimFov = nil
+            S.camlock._savedAimFov = nil
         end
     end)
 
     createLabel("ZOOM FOV (when pulling)", panel.Content, UDim2.new(0, 0, 0, 284))
-    local zoomFovStep = createStepper(panel.Content, UDim2.new(0, 0, 0, 300), camlockState.aimZoomFov, 55, 110, 1)
+    local zoomFovStep = createStepper(panel.Content, UDim2.new(0, 0, 0, 300), S.camlock.aimZoomFov, 55, 110, 1)
     zoomFovStep.OnChange(function(v)
-        camlockState.aimZoomFov = v
+        S.camlock.aimZoomFov = v
     end)
 
     createLabel("HIT PART", panel.Content, UDim2.new(0, 0, 0, 340))
@@ -9086,22 +9179,22 @@ aimbotPanel = (function()
         panel.Content,
         UDim2.new(0, 0, 0, 356),
         { "Head", "UpperTorso", "LowerTorso", "HumanoidRootPart" },
-        camlockState.hitPart,
+        S.camlock.hitPart,
         function(partName)
             local short = { UpperTorso = "Upper torso", LowerTorso = "Lower torso", HumanoidRootPart = "RootPart" }
             return short[partName] or partName
         end
     )
     hitCycle.OnChange(function(v)
-        camlockState.hitPart = v
+        S.camlock.hitPart = v
     end)
 
     createLabel("SILENT (Mouse.Hit spoof)", panel.Content, UDim2.new(0, 0, 0, 400))
-    local silentTog = createToggleButton(panel.Content, UDim2.new(0, 0, 0, 416), camlockState.silent)
+    local silentTog = createToggleButton(panel.Content, UDim2.new(0, 0, 0, 416), S.camlock.silent)
     silentTog.OnToggle(function(on)
-        camlockState.silent = on
+        S.camlock.silent = on
         if not on then
-            camlockState.silentMouseWarned = false
+            S.camlock.silentMouseWarned = false
         end
     end)
 
@@ -9109,8 +9202,8 @@ aimbotPanel = (function()
     local aimHoldBinder = createAimHoldBinder(panel.Content, UDim2.new(0, 0, 0, 476))
 
     createLabel("TOGGLE AIMBOT KEY", panel.Content, UDim2.new(0, 0, 0, 512))
-    createHotkeyButton(panel.Content, UDim2.new(0, 0, 0, 528), camlockState.hotkey).OnChange(function(key)
-        camlockState.hotkey = key
+    createHotkeyButton(panel.Content, UDim2.new(0, 0, 0, 528), S.camlock.hotkey).OnChange(function(key)
+        S.camlock.hotkey = key
     end)
 
     createLabel("ALWAYS ACTIVE TOGGLE KEY", panel.Content, UDim2.new(0, 0, 0, 564))
@@ -9128,14 +9221,14 @@ aimbotPanel = (function()
 
     local baseShow = panel.Show
     panel.Show = function()
-        camlockMasterToggle.SetState(camlockState.armed)
-        silentTog.SetState(camlockState.silent)
-        hitCycle.SetValue(camlockState.hitPart)
-        sensStep.SetValue(math.clamp(math.floor(camlockState.smoothStrength / 0.2 + 0.5), 1, 100))
-        coneStep.SetValue(math.clamp(math.floor(camlockState.aimConeDeg + 0.5), 10, 100))
-        fovBoxTog.SetState(camlockState.fovBoxVisible)
-        zoomPullTog.SetState(camlockState.aimZoomEnabled)
-        zoomFovStep.SetValue(math.clamp(math.floor(camlockState.aimZoomFov + 0.5), 55, 110))
+        camlockMasterToggle.SetState(S.camlock.armed)
+        silentTog.SetState(S.camlock.silent)
+        hitCycle.SetValue(S.camlock.hitPart)
+        sensStep.SetValue(math.clamp(math.floor(S.camlock.smoothStrength / 0.2 + 0.5), 1, 100))
+        coneStep.SetValue(math.clamp(math.floor(S.camlock.aimConeDeg + 0.5), 10, 100))
+        fovBoxTog.SetState(S.camlock.fovBoxVisible)
+        zoomPullTog.SetState(S.camlock.aimZoomEnabled)
+        zoomFovStep.SetValue(math.clamp(math.floor(S.camlock.aimZoomFov + 0.5), 55, 110))
         alwaysTog.SetState(hotkeyAlwaysActive["camlock"] or false)
         aimHoldBinder.Refresh()
         updateCamlockTargetLabel()
@@ -9154,7 +9247,7 @@ end)()
 -------------------------------------------------
 -- SMOOTH FLY (inertia + momentum + camera banking)
 -------------------------------------------------
-smoothFlyState = smoothFlyState or {
+S.smoothFly = S.smoothFly or {
     enabled = false,
     speed = 80,
     hotkey = Enum.KeyCode.G,
@@ -9176,28 +9269,28 @@ local BANK_MAX = 18
 local BANK_SPEED = 4
 
 stopSmoothFly = function()
-    smoothFlyState.enabled = false
-    smoothFlyState.velocity = Vector3.zero
-    smoothFlyState.bankAngle = 0
-    if smoothFlyState.connection then
-        smoothFlyState.connection:Disconnect()
-        smoothFlyState.connection = nil
+    S.smoothFly.enabled = false
+    S.smoothFly.velocity = Vector3.zero
+    S.smoothFly.bankAngle = 0
+    if S.smoothFly.connection then
+        S.smoothFly.connection:Disconnect()
+        S.smoothFly.connection = nil
     end
-    if smoothFlyState.bodyPos then
-        smoothFlyState.bodyPos:Destroy()
-        smoothFlyState.bodyPos = nil
+    if S.smoothFly.bodyPos then
+        S.smoothFly.bodyPos:Destroy()
+        S.smoothFly.bodyPos = nil
     end
-    if smoothFlyState.bodyGyro then
-        smoothFlyState.bodyGyro:Destroy()
-        smoothFlyState.bodyGyro = nil
+    if S.smoothFly.bodyGyro then
+        S.smoothFly.bodyGyro:Destroy()
+        S.smoothFly.bodyGyro = nil
     end
     local char = LocalPlayer.Character
     if char then
         local humanoid = char:FindFirstChildOfClass("Humanoid")
         if humanoid then
             humanoid.PlatformStand = false
-            if smoothFlyState.savedAutoRotate ~= nil then
-                humanoid.AutoRotate = smoothFlyState.savedAutoRotate
+            if S.smoothFly.savedAutoRotate ~= nil then
+                humanoid.AutoRotate = S.smoothFly.savedAutoRotate
             end
             pcall(function() humanoid:ChangeState(Enum.HumanoidStateType.Running) end)
             pcall(function() humanoid:SetStateEnabled(Enum.HumanoidStateType.Freefall, true) end)
@@ -9205,12 +9298,12 @@ stopSmoothFly = function()
             pcall(function() humanoid:SetStateEnabled(Enum.HumanoidStateType.Running, true) end)
         end
     end
-    smoothFlyState.savedAutoRotate = nil
+    S.smoothFly.savedAutoRotate = nil
     setToggleState("smoothfly", false)
 end
 
 startSmoothFly = function()
-    if smoothFlyState.enabled then stopSmoothFly() end
+    if S.smoothFly.enabled then stopSmoothFly() end
 
     local char = LocalPlayer.Character
     if not char then notify("No character found", "error"); return false end
@@ -9218,10 +9311,10 @@ startSmoothFly = function()
     local humanoid = char:FindFirstChildOfClass("Humanoid")
     if not hrp or not humanoid then notify("Character not fully loaded", "error"); return false end
 
-    smoothFlyState.enabled = true
-    smoothFlyState.velocity = Vector3.zero
-    smoothFlyState.bankAngle = 0
-    smoothFlyState.savedAutoRotate = humanoid.AutoRotate
+    S.smoothFly.enabled = true
+    S.smoothFly.velocity = Vector3.zero
+    S.smoothFly.bankAngle = 0
+    S.smoothFly.savedAutoRotate = humanoid.AutoRotate
     humanoid.AutoRotate = false
     humanoid.PlatformStand = true
     pcall(function() humanoid:ChangeState(Enum.HumanoidStateType.Physics) end)
@@ -9229,23 +9322,23 @@ startSmoothFly = function()
     pcall(function() humanoid:SetStateEnabled(Enum.HumanoidStateType.Jumping, false) end)
     pcall(function() humanoid:SetStateEnabled(Enum.HumanoidStateType.Running, false) end)
 
-    smoothFlyState.bodyPos = Instance.new("BodyPosition")
-    smoothFlyState.bodyPos.MaxForce = Vector3.new(1e6, 1e6, 1e6)
-    smoothFlyState.bodyPos.D = 500
-    smoothFlyState.bodyPos.P = 7000
-    smoothFlyState.bodyPos.Position = hrp.Position
-    smoothFlyState.bodyPos.Parent = hrp
+    S.smoothFly.bodyPos = Instance.new("BodyPosition")
+    S.smoothFly.bodyPos.MaxForce = Vector3.new(1e6, 1e6, 1e6)
+    S.smoothFly.bodyPos.D = 500
+    S.smoothFly.bodyPos.P = 7000
+    S.smoothFly.bodyPos.Position = hrp.Position
+    S.smoothFly.bodyPos.Parent = hrp
 
-    smoothFlyState.bodyGyro = Instance.new("BodyGyro")
-    smoothFlyState.bodyGyro.MaxTorque = Vector3.new(1e6, 1e6, 1e6)
-    smoothFlyState.bodyGyro.P = 9000
-    smoothFlyState.bodyGyro.D = 600
-    smoothFlyState.bodyGyro.Parent = hrp
+    S.smoothFly.bodyGyro = Instance.new("BodyGyro")
+    S.smoothFly.bodyGyro.MaxTorque = Vector3.new(1e6, 1e6, 1e6)
+    S.smoothFly.bodyGyro.P = 9000
+    S.smoothFly.bodyGyro.D = 600
+    S.smoothFly.bodyGyro.Parent = hrp
 
     setToggleState("smoothfly", true)
 
-    smoothFlyState.connection = RunService.RenderStepped:Connect(function(dt)
-        if not smoothFlyState.enabled or not smoothFlyState.bodyPos or not smoothFlyState.bodyGyro then return end
+    S.smoothFly.connection = RunService.RenderStepped:Connect(function(dt)
+        if not S.smoothFly.enabled or not S.smoothFly.bodyPos or not S.smoothFly.bodyGyro then return end
         local cam = workspace.CurrentCamera
         if not cam then return end
 
@@ -9279,25 +9372,25 @@ startSmoothFly = function()
             inputDir = inputDir.Unit
         end
 
-        local targetVel = hasInput and (inputDir * smoothFlyState.speed) or Vector3.zero
+        local targetVel = hasInput and (inputDir * S.smoothFly.speed) or Vector3.zero
         local accelRate = hasInput and ACCEL or DECEL
-        smoothFlyState.velocity = smoothFlyState.velocity:Lerp(targetVel, math.clamp(accelRate * dt, 0, 1))
+        S.smoothFly.velocity = S.smoothFly.velocity:Lerp(targetVel, math.clamp(accelRate * dt, 0, 1))
 
-        if smoothFlyState.velocity.Magnitude < 0.5 and not hasInput then
-            smoothFlyState.velocity = Vector3.zero
+        if S.smoothFly.velocity.Magnitude < 0.5 and not hasInput then
+            S.smoothFly.velocity = Vector3.zero
         end
 
-        smoothFlyState.bodyPos.Position = hrpNow.Position + smoothFlyState.velocity * dt
+        S.smoothFly.bodyPos.Position = hrpNow.Position + S.smoothFly.velocity * dt
 
         local lateralInput = 0
         if UserInputService:IsKeyDown(Enum.KeyCode.A) then lateralInput = lateralInput - 1 end
         if UserInputService:IsKeyDown(Enum.KeyCode.D) then lateralInput = lateralInput + 1 end
 
         local targetBank = lateralInput * BANK_MAX
-        smoothFlyState.bankAngle = smoothFlyState.bankAngle + (targetBank - smoothFlyState.bankAngle) * math.clamp(BANK_SPEED * dt, 0, 1)
+        S.smoothFly.bankAngle = S.smoothFly.bankAngle + (targetBank - S.smoothFly.bankAngle) * math.clamp(BANK_SPEED * dt, 0, 1)
 
-        local bankCF = cf * CFrame.Angles(0, 0, math.rad(-smoothFlyState.bankAngle))
-        smoothFlyState.bodyGyro.CFrame = bankCF
+        local bankCF = cf * CFrame.Angles(0, 0, math.rad(-S.smoothFly.bankAngle))
+        S.smoothFly.bodyGyro.CFrame = bankCF
 
         pcall(function()
             hrpNow.AssemblyLinearVelocity = Vector3.zero
@@ -9309,7 +9402,7 @@ startSmoothFly = function()
 end
 
 -- SmoothFly panel (store refs in state table to reduce local-register pressure)
-smoothFlyState.panel = createToolPanel({
+S.smoothFly.panel = createToolPanel({
     Name = "SmoothFlyPanel",
     Title = "Smooth Flight",
     Width = 260,
@@ -9317,7 +9410,7 @@ smoothFlyState.panel = createToolPanel({
     Position = UDim2.new(0.5, -130, 0.5, -130),
 })
 
-smoothFlyToggle = createToggleButton(smoothFlyState.panel.Content, UDim2.new(0, 0, 0, 4))
+smoothFlyToggle = createToggleButton(S.smoothFly.panel.Content, UDim2.new(0, 0, 0, 4))
 smoothFlyToggle.OnToggle(function(enabled)
     if enabled then
         if not startSmoothFly() then
@@ -9331,23 +9424,23 @@ smoothFlyToggle.OnToggle(function(enabled)
     end
 end)
 
-createLabel("SPEED", smoothFlyState.panel.Content, UDim2.new(0, 0, 0, 46))
-smoothFlyState.speedStepper = createStepper(smoothFlyState.panel.Content, UDim2.new(0, 0, 0, 62), smoothFlyState.speed, 10, 500, 10)
-smoothFlyState.speedStepper.OnChange(function(v)
-    smoothFlyState.speed = v
+createLabel("SPEED", S.smoothFly.panel.Content, UDim2.new(0, 0, 0, 46))
+S.smoothFly.speedStepper = createStepper(S.smoothFly.panel.Content, UDim2.new(0, 0, 0, 62), S.smoothFly.speed, 10, 500, 10)
+S.smoothFly.speedStepper.OnChange(function(v)
+    S.smoothFly.speed = v
 end)
 
-createLabel("HOTKEY", smoothFlyState.panel.Content, UDim2.new(0, 0, 0, 98))
-smoothFlyState.hotkeyBtn = createHotkeyButton(smoothFlyState.panel.Content, UDim2.new(0, 0, 0, 114), smoothFlyState.hotkey)
-smoothFlyState.hotkeyBtn.OnChange(function(newKey)
-    smoothFlyState.hotkey = newKey
+createLabel("HOTKEY", S.smoothFly.panel.Content, UDim2.new(0, 0, 0, 98))
+S.smoothFly.hotkeyBtn = createHotkeyButton(S.smoothFly.panel.Content, UDim2.new(0, 0, 0, 114), S.smoothFly.hotkey)
+S.smoothFly.hotkeyBtn.OnChange(function(newKey)
+    S.smoothFly.hotkey = newKey
     notify("Smooth flight hotkey set to " .. newKey.Name, "info", 2)
 end)
 
-createLabel("ALWAYS ACTIVE HOTKEY", smoothFlyState.panel.Content, UDim2.new(0, 0, 0, 150))
+createLabel("ALWAYS ACTIVE HOTKEY", S.smoothFly.panel.Content, UDim2.new(0, 0, 0, 150))
 do
-    smoothFlyState.hotkeyAlwaysToggle = createToggleButton(smoothFlyState.panel.Content, UDim2.new(0, 0, 0, 166), hotkeyAlwaysActive["smoothfly"] or false)
-    smoothFlyState.hotkeyAlwaysToggle.OnToggle(function(enabled)
+    S.smoothFly.hotkeyAlwaysToggle = createToggleButton(S.smoothFly.panel.Content, UDim2.new(0, 0, 0, 166), hotkeyAlwaysActive["smoothfly"] or false)
+    S.smoothFly.hotkeyAlwaysToggle.OnToggle(function(enabled)
         hotkeyAlwaysActive["smoothfly"] = enabled
         persistedConfig.hotkeyAlwaysActive["smoothfly"] = enabled or nil
         savePersistedConfig()
@@ -9364,20 +9457,20 @@ create("TextLabel", {
     TextSize = 10,
     Font = Theme.Font,
     TextXAlignment = Enum.TextXAlignment.Center,
-    Parent = smoothFlyState.panel.Content,
+    Parent = S.smoothFly.panel.Content,
 })
 
 Commands["smoothfly"].Execute = function(args)
     if args and args[1] then
         local n = tonumber(args[1])
         if n then
-            smoothFlyState.speed = math.clamp(n, 10, 500)
-            smoothFlyState.speedStepper.SetValue(smoothFlyState.speed)
+            S.smoothFly.speed = math.clamp(n, 10, 500)
+            S.smoothFly.speedStepper.SetValue(S.smoothFly.speed)
         end
     end
     task.defer(function()
-        if not smoothFlyState.panel.IsOpen() then
-            smoothFlyState.panel.Show()
+        if not S.smoothFly.panel.IsOpen() then
+            S.smoothFly.panel.Show()
         end
     end)
 end
@@ -9621,7 +9714,7 @@ local function createPlayerRow(player, index)
             local hum = player.Character:FindFirstChildOfClass("Humanoid")
             if hum then
                 cam.CameraSubject = hum
-                spectateState.target = player
+                S.spectate.target = player
                 notify("Spectating " .. player.DisplayName, "info", 2)
             end
         end
@@ -10366,11 +10459,11 @@ end)()
 
 -- Respawn handler: clean up fly/noclip on death
 LocalPlayer.CharacterAdded:Connect(function()
-    if flyState.enabled then
+    if S.fly.enabled then
         stopFly()
         flyToggle.SetState(false)
     end
-    if noclipState.enabled then
+    if S.noclip.enabled then
         stopNoclip()
         noclipToggle.SetState(false)
     end
@@ -10776,21 +10869,22 @@ local function refreshToggleStates()
         end
     end
     -- Main-scope state tables (all declared as locals in this file)
-    if flyState then safe("fly", flyState.enabled) end
-    if noclipState then safe("noclip", noclipState.enabled) end
-    if espState then safe("esp", espState.enabled) end
-    if antiFlingState then safe("antifling", antiFlingState.enabled) end
-    if infJumpState then safe("infjump", infJumpState.enabled) end
-    if godState then safe("god", godState.enabled) end
-    if invisState then safe("invisible", invisState.enabled) end
-    if trailState then safe("trail", trailState.enabled) end
-    if freecamState then safe("freecam", freecamState.enabled) end
-    if clickFlingState then safe("clickfling", clickFlingState.enabled) end
-    safe("silent", targetingState and targetingState.silent)
-    safe("resolver", targetingState and targetingState.velocityResolver)
-    if hitboxState then safe("hitbox", hitboxState.enabled) end
-    if _G.UA_camlockState then safe("camlock", _G.UA_camlockState.armed) end
-    if smoothFlyState then safe("smoothfly", smoothFlyState.enabled) end
+    if S.fly then safe("fly", S.fly.enabled) end
+    if S.noclip then safe("noclip", S.noclip.enabled) end
+    if S.esp then safe("esp", S.esp.enabled) end
+    if S.antiFling then safe("antifling", S.antiFling.enabled) end
+    if S.infJump then safe("infjump", S.infJump.enabled) end
+    if S.spider then safe("spider", S.spider.enabled) end
+    if S.god then safe("god", S.god.enabled) end
+    if S.invis then safe("invisible", S.invis.enabled) end
+    if S.trail then safe("trail", S.trail.enabled) end
+    if S.freecam then safe("freecam", S.freecam.enabled) end
+    if S.clickFling then safe("clickfling", S.clickFling.enabled) end
+    safe("silent", S.targeting and S.targeting.silent)
+    safe("resolver", S.targeting and S.targeting.velocityResolver)
+    if S.hitbox then safe("hitbox", S.hitbox.enabled) end
+    if _G.UA_camlockState then safe("camlock", S.camlock.armed) end
+    if S.smoothFly then safe("smoothfly", S.smoothFly.enabled) end
     if peerOps and peerOps.pkillField then safe("pkillfield", peerOps.pkillField.enabled) end
     -- Note: clicktp/fullbright/remotespy/antiafk set their own via setToggleState
 end
@@ -11917,7 +12011,6 @@ local function loadFriends()
         incomingRequests = type(data.incomingRequests) == "table" and data.incomingRequests or {}
         outgoingRequests = type(data.outgoingRequests) == "table" and data.outgoingRequests or {}
     end
-    end
     return data, err
 end
 
@@ -12427,22 +12520,22 @@ create("TextLabel", {
     Parent = fpHeader,
 })
 
-local fpCloseBtn = create("TextLabel", {
+local fpCloseBtn = create("TextButton", {
     Name = "FPCloseBtn",
     Size = UDim2.new(0, 28, 0, 28),
     Position = UDim2.new(1, -40, 0.5, -14),
+    BackgroundColor3 = Theme.Surface,
     BackgroundTransparency = 1,
     Text = "X",
     TextColor3 = Theme.TextMuted,
     TextSize = 14,
     Font = Theme.FontBold,
+    AutoButtonColor = false,
     Parent = fpHeader,
 })
-fpCloseBtn.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 then
-        playClickSound()
-        if closeFriendsPanel then closeFriendsPanel() end
-    end
+fpCloseBtn.MouseButton1Click:Connect(function()
+    playClickSound()
+    if closeFriendsPanel then closeFriendsPanel() end
 end)
 
 -- Accent bar
@@ -13125,9 +13218,9 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 
     local camlockState = _G.UA_camlockState
 
-    if input.KeyCode == flyState.hotkey then
-        if not (hotkeyAlwaysActive["fly"] or flyPanel.IsOpen() or flyState.enabled) then return end
-        if flyState.enabled then
+    if input.KeyCode == S.fly.hotkey then
+        if not (hotkeyAlwaysActive["fly"] or flyPanel.IsOpen() or S.fly.enabled) then return end
+        if S.fly.enabled then
             stopFly()
             flyToggle.SetState(false)
             notify("Flight disabled", "info", 2)
@@ -13137,9 +13230,9 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
                 notify("Flight enabled", "success", 2)
             end
         end
-    elseif input.KeyCode == noclipState.hotkey then
-        if not (hotkeyAlwaysActive["noclip"] or noclipPanel.IsOpen() or noclipState.enabled) then return end
-        if noclipState.enabled then
+    elseif input.KeyCode == S.noclip.hotkey then
+        if not (hotkeyAlwaysActive["noclip"] or noclipPanel.IsOpen() or S.noclip.enabled) then return end
+        if S.noclip.enabled then
             stopNoclip()
             noclipToggle.SetState(false)
             notify("Noclip disabled", "info", 2)
@@ -13148,9 +13241,9 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
             noclipToggle.SetState(true)
             notify("Noclip enabled", "success", 2)
         end
-    elseif input.KeyCode == clickFlingState.bind then
-        if not (hotkeyAlwaysActive["clickfling"] or clickFlingPanel.IsOpen() or clickFlingState.enabled) then return end
-        if clickFlingState.enabled then
+    elseif input.KeyCode == S.clickFling.bind then
+        if not (hotkeyAlwaysActive["clickfling"] or clickFlingPanel.IsOpen() or S.clickFling.enabled) then return end
+        if S.clickFling.enabled then
             stopClickFling()
             clickFlingToggle.SetState(false)
             notify("Click-fling disabled", "info", 2)
@@ -13158,24 +13251,24 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
             startClickFling()
             clickFlingToggle.SetState(true)
         end
-    elseif input.KeyCode == clickFlingState.triggerBind then
-        if not (hotkeyAlwaysActive["clickfling"] or clickFlingPanel.IsOpen() or clickFlingState.enabled) then return end
-        if not clickFlingState.enabled then return end
-        if flingInProgress then return end
-        local target = (targetingState.silent and camlockState.armed and camlockState.target) or getClosestPlayerToMouse()
+    elseif input.KeyCode == S.clickFling.triggerBind then
+        if not (hotkeyAlwaysActive["clickfling"] or clickFlingPanel.IsOpen() or S.clickFling.enabled) then return end
+        if not S.clickFling.enabled then return end
+        if S.flingInProgress then return end
+        local target = (S.targeting.silent and S.camlock.armed and S.camlock.target) or getClosestPlayerToMouse()
         if not target then
             notify("No player near cursor to fling", "warning", 2)
             return
         end
         task.spawn(function()
-            local ok, err = pcall(flingPlayer, target, clickFlingState.mode)
+            local ok, err = pcall(flingPlayer, target, S.clickFling.mode)
             if not ok then
                 notify("Click-fling failed: " .. tostring(err), "error", 2)
             end
         end)
-    elseif input.KeyCode == camlockState.hotkey then
-        if not (hotkeyAlwaysActive["camlock"] or aimbotPanel.IsOpen() or camlockState.armed) then return end
-        if camlockState.armed then
+    elseif input.KeyCode == S.camlock.hotkey then
+        if not (hotkeyAlwaysActive["camlock"] or aimbotPanel.IsOpen() or S.camlock.armed) then return end
+        if S.camlock.armed then
             stopCamlock()
             notify("Aimbot disarmed", "info", 2)
         else
@@ -13188,10 +13281,10 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
                 notify("No players to lock onto", "warning", 2)
             end
         end
-    elseif input.KeyCode == smoothFlyState.hotkey then
-        local sfPanelOpen = smoothFlyState.panel and smoothFlyState.panel.IsOpen and smoothFlyState.panel.IsOpen() or false
-        if not (hotkeyAlwaysActive["smoothfly"] or sfPanelOpen or smoothFlyState.enabled) then return end
-        if smoothFlyState.enabled then
+    elseif input.KeyCode == S.smoothFly.hotkey then
+        local sfPanelOpen = S.smoothFly.panel and S.smoothFly.panel.IsOpen and S.smoothFly.panel.IsOpen() or false
+        if not (hotkeyAlwaysActive["smoothfly"] or sfPanelOpen or S.smoothFly.enabled) then return end
+        if S.smoothFly.enabled then
             stopSmoothFly()
             smoothFlyToggle.SetState(false)
             notify("Smooth flight disabled", "info", 2)
