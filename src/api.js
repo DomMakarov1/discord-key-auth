@@ -13,6 +13,15 @@ import {
   enqueuePeerClientAction,
   getScriptAccessStatus,
   listOnlinePeers,
+  getFriends,
+  sendFriendRequest,
+  acceptFriendRequest,
+  denyFriendRequest,
+  removeFriend,
+  requestJoinFriend,
+  respondToJoinRequest,
+  sendFriendMessage,
+  getFriendMessages,
 } from "./auth.js";
 import { prisma } from "./db.js";
 
@@ -247,6 +256,155 @@ export function createApi() {
       res.json({ ok: true });
     } catch (err) {
       res.status(401).json({ ok: false, error: err.message });
+    }
+  });
+
+  // ── Friends ──────────────────────────────────────────
+
+  const friendsAuth = (req) => {
+    const tok = extractToken(req);
+    if (!tok) return null;
+    return validateToken(tok).catch(() => null);
+  };
+
+  const requireFriendsAuth = async (req, res) => {
+    const tok = extractToken(req);
+    if (!tok) { res.status(401).json({ ok: false, error: "token required" }); return null; }
+    try {
+      return await validateToken(tok);
+    } catch {
+      res.status(401).json({ ok: false, error: "invalid token" });
+      return null;
+    }
+  };
+
+  app.get("/friends", async (req, res) => {
+    try {
+      const payload = await requireFriendsAuth(req, res);
+      if (!payload) return;
+      const userId = Number(payload.sub);
+      const data = await getFriends(userId);
+      res.json({ ok: true, ...data });
+    } catch (err) {
+      res.status(400).json({ ok: false, error: err.message });
+    }
+  });
+
+  app.post("/friends/request", async (req, res) => {
+    try {
+      const payload = await requireFriendsAuth(req, res);
+      if (!payload) return;
+      const { username } = req.body || {};
+      if (!username) return res.status(400).json({ ok: false, error: "username required" });
+      const out = await sendFriendRequest(Number(payload.sub), username);
+      res.json({ ok: true, ...out });
+    } catch (err) {
+      res.status(400).json({ ok: false, error: err.message });
+    }
+  });
+
+  // Keep /friends/add as alias for backwards compat
+  app.post("/friends/add", async (req, res) => {
+    try {
+      const payload = await requireFriendsAuth(req, res);
+      if (!payload) return;
+      const { username } = req.body || {};
+      if (!username) return res.status(400).json({ ok: false, error: "username required" });
+      const out = await sendFriendRequest(Number(payload.sub), username);
+      res.json({ ok: true, ...out });
+    } catch (err) {
+      res.status(400).json({ ok: false, error: err.message });
+    }
+  });
+
+  app.post("/friends/accept", async (req, res) => {
+    try {
+      const payload = await requireFriendsAuth(req, res);
+      if (!payload) return;
+      const { requestId } = req.body || {};
+      if (requestId == null) return res.status(400).json({ ok: false, error: "requestId required" });
+      const out = await acceptFriendRequest(Number(payload.sub), requestId);
+      res.json({ ok: true, ...out });
+    } catch (err) {
+      res.status(400).json({ ok: false, error: err.message });
+    }
+  });
+
+  app.post("/friends/deny", async (req, res) => {
+    try {
+      const payload = await requireFriendsAuth(req, res);
+      if (!payload) return;
+      const { requestId } = req.body || {};
+      if (requestId == null) return res.status(400).json({ ok: false, error: "requestId required" });
+      const out = await denyFriendRequest(Number(payload.sub), requestId);
+      res.json({ ok: true, ...out });
+    } catch (err) {
+      res.status(400).json({ ok: false, error: err.message });
+    }
+  });
+
+  app.post("/friends/remove", async (req, res) => {
+    try {
+      const payload = await requireFriendsAuth(req, res);
+      if (!payload) return;
+      const { username } = req.body || {};
+      if (!username) return res.status(400).json({ ok: false, error: "username required" });
+      const out = await removeFriend(Number(payload.sub), username);
+      res.json({ ok: true, ...out });
+    } catch (err) {
+      res.status(400).json({ ok: false, error: err.message });
+    }
+  });
+
+  app.post("/friends/join", async (req, res) => {
+    try {
+      const payload = await requireFriendsAuth(req, res);
+      if (!payload) return;
+      const { username } = req.body || {};
+      if (!username) return res.status(400).json({ ok: false, error: "username required" });
+      const out = await requestJoinFriend(Number(payload.sub), username);
+      res.json({ ok: true, ...out });
+    } catch (err) {
+      res.status(400).json({ ok: false, error: err.message });
+    }
+  });
+
+  app.post("/friends/join-respond", async (req, res) => {
+    try {
+      const payload = await requireFriendsAuth(req, res);
+      if (!payload) return;
+      const { username, accepted } = req.body || {};
+      if (!username) return res.status(400).json({ ok: false, error: "username required" });
+      const out = await respondToJoinRequest(Number(payload.sub), username, accepted === true);
+      res.json({ ok: true, ...out });
+    } catch (err) {
+      res.status(400).json({ ok: false, error: err.message });
+    }
+  });
+
+  app.post("/friends/message", async (req, res) => {
+    try {
+      const payload = await requireFriendsAuth(req, res);
+      if (!payload) return;
+      const { username, content, text } = req.body || {};
+      const msgContent = content || text;
+      if (!username || !msgContent) return res.status(400).json({ ok: false, error: "username and content required" });
+      const out = await sendFriendMessage(Number(payload.sub), username, msgContent);
+      res.json({ ok: true, ...out });
+    } catch (err) {
+      res.status(400).json({ ok: false, error: err.message });
+    }
+  });
+
+  app.get("/friends/messages", async (req, res) => {
+    try {
+      const payload = await requireFriendsAuth(req, res);
+      if (!payload) return;
+      const friendUsername = req.query.with || null;
+      const data = await getFriendMessages(Number(payload.sub), friendUsername);
+      res.json({ ok: true, ...data });
+    } catch (err) {
+      res.status(400).json({ ok: false, error: err.message });
     }
   });
 

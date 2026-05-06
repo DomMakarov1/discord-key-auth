@@ -21,7 +21,13 @@ model User {
   keysAssigned  Key[]     @relation("KeyAssignee")
   sessions      Session[]
   clientCommands ClientCommand[]
-  warnings      Warning[]
+  warnings              Warning[]
+  friendshipsAsUser1    Friendship[]       @relation("FriendshipUser1")
+  friendshipsAsUser2    Friendship[]       @relation("FriendshipUser2")
+  sentFriendRequests    FriendRequest[]    @relation("FriendReqSender")
+  receivedFriendRequests FriendRequest[]   @relation("FriendReqReceiver")
+  sentMessages          FriendMessage[]    @relation("FMsgSender")
+  receivedMessages      FriendMessage[]    @relation("FMsgReceiver")
 }
 
 model Key {
@@ -110,6 +116,46 @@ model HwidLoginState {
 }
 
 /// Blocks script login from a device (HWID and/or IP).
+model Friendship {
+  id        Int      @id @default(autoincrement())
+  user1Id   Int
+  user2Id   Int
+  createdAt DateTime @default(now())
+  user1     User     @relation("FriendshipUser1", fields: [user1Id], references: [id])
+  user2     User     @relation("FriendshipUser2", fields: [user2Id], references: [id])
+
+  @@unique([user1Id, user2Id])
+  @@index([user2Id])
+}
+
+model FriendRequest {
+  id         Int      @id @default(autoincrement())
+  senderId   Int
+  receiverId Int
+  status     String   @default("pending")
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  sender     User     @relation("FriendReqSender", fields: [senderId], references: [id])
+  receiver   User     @relation("FriendReqReceiver", fields: [receiverId], references: [id])
+
+  @@index([receiverId, status])
+  @@index([senderId])
+}
+
+model FriendMessage {
+  id         Int      @id @default(autoincrement())
+  senderId   Int
+  receiverId Int
+  content    String
+  createdAt  DateTime @default(now())
+  readAt     DateTime?
+  sender     User     @relation("FMsgSender", fields: [senderId], references: [id])
+  receiver   User     @relation("FMsgReceiver", fields: [receiverId], references: [id])
+
+  @@index([senderId, receiverId, createdAt])
+  @@index([receiverId, readAt])
+}
+
 model AccessBan {
   id                 Int      @id @default(autoincrement())
   hwid               String?

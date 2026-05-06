@@ -1220,3 +1220,338 @@ export async function getPresenceStatusByIdentity(identity) {
     lastAckError: lastAck?.ackError || null,
   };
 }
+
+// ── Friends system ──────────────────────────────────────────
+
+async function getUserByUsernameSafe(username) {
+  const u = String(username || "").trim();
+  if (!u) throw new Error("Username required");
+  const user = await prisma.user.findUnique({ where: { username: u } });
+  if (!user) throw new Error("User not found");
+  return user;
+}
+
+async function areFriends(userIdA, userIdB) {
+  if (userIdA === userIdB) return true;
+  const ids = [userIdA, userIdB].sort((a, b) => a - b);
+  const row = await prisma.friendship.findUnique({
+    where: { user1Id_user2Id: { user1Id: ids[0], user2Id: ids[1] } },
+  });
+  return !!row;
+}
+
+function orderFriendIds(a, b) {
+  return a < b ? { user1Id: a, user2Id: b } : { user1Id: b, user2Id: a };
+}
+
+export async function getFriends(userId) {
+  const [sent, received, friendships] = await Promise.all([
+    prisma.friendRequest.findMany({
+      where: { senderId: userId, status: "pending" },
+      include: { receiver: { select: { id: true, username: true } } },
+      orderBy: { createdAt: "desc" },
+    }),
+    prisma.friendRequest.findMany({
+      where: { receiverId: userId, status: "pending" },
+      include: { sender: { select: { id: true, username: true } } },
+      orderBy: { createdAt: "desc" },
+    }),
+    prisma.friendship.findMany({
+      where: { OR: [{ user1Id: userId }, { user2Id: userId }] },
+      include: {
+        user1: { select: { id: true, username: true } },
+        user2: { select: { id: true, username: true } },
+      },
+    }),
+  ]);
+
+  const now = Date.now();
+  const PRESENCE_MS = 15 * 60_000;
+  const friendIds = friendships.map((f) =>
+    f.user1Id === userId ? f.user2Id : f.user1Id
+  );
+
+  // Fetch all friend sessions to check online status
+  const sessions =
+    friendIds.length > 0
+      ? await prisma.session.findMany({
+          where: {
+            userId: { in: friendIds },
+            endedAt: null,
+            revoked: false,
+            lastSeenAt: { gte: new Date(now - PRESENCE_MS) },
+          },
+          orderBy: { lastSeenAt: "desc" },
+        })
+      : [];
+
+  const latestByUser = new Map();
+  for (const s of sessions) {
+    if (!latestByUser.has(s.userId)) latestByUser.set(s.userId, s);
+  }
+
+  const friends = friendships.map((f) => {
+    const friendUser = f.user1Id === userId ? f.user2 : f.user1;
+    const sess = latestByUser.get(friendUser.id);
+    return {
+      username: friendUser.username,
+      online: !!sess,
+      gameName: sess?.robloxPlaceId || null,
+      robloxUsername: sess?.robloxUsername || null,
+      placeId: sess?.robloxPlaceId || null,
+      gameId: sess?.robloxGameId || null,
+    };
+  });
+
+  return {
+    friends,
+    outgoingRequests: sent.map((r) => ({
+      id: r.id,
+      username: r.receiver.username,
+    })),
+    incomingRequests: received.map((r) => ({
+      id: r.id,
+      username: r.sender.username,
+    })),
+  };
+}
+
+export async function sendFriendRequest(senderId, targetUsername) {
+  const sender = await prisma.user.findUnique({ where: { id: senderId } });
+  if (!sender) throw new Error("Sender not found");
+  const target = await getUserByUsernameSafe(targetUsername);
+  if (target.id === senderId) throw new Error("Cannot friend yourself");
+
+  // Check existing friendship
+  const ids = orderFriendIds(senderId, target.id);
+  const existingFriendship = await prisma.friendship.findUnique({
+    where: { user1Id_user2Id: ids },
+  });
+  if (existingFriendship) throw new Error("Already friends");
+
+  // Check for existing pending request (either direction)
+  const existingReq = await prisma.friendRequest.findFirst({
+    where: {
+      OR: [
+        { senderId, receiverId: target.id, status: "pending" },
+        { senderId: target.id, receiverId: senderId, status: "pending" },
+      ],
+    },
+  });
+  if (existingReq) {
+    if (existingReq.senderId === senderId) {
+      throw new Error("Friend request already sent");
+    }
+    throw new Error("This user already sent you a request — accept it instead");
+  }
+
+  const req = await prisma.friendRequest.create({
+    data: { senderId, receiverId: target.id },
+  });
+  return { requestId: req.id, targetUsername: target.username };
+}
+
+export async function acceptFriendRequest(userId, requestId) {
+  const req = await prisma.friendRequest.findUnique({ where: { id: Number(requestId) } });
+  if (!req) throw new Error("Request not found");
+  if (req.receiverId !== userId) throw new Error("Not your request to accept");
+  if (req.status !== "pending") throw new Error("Request is no longer pending");
+
+  await prisma.friendRequest.update({
+    where: { id: req.id },
+    data: { status: "accepted", updatedAt: new Date() },
+  });
+
+  const ids = orderFriendIds(req.senderId, req.receiverId);
+  await prisma.friendship.create({
+    data: { user1Id: ids.user1Id, user2Id: ids.user2Id },
+  });
+
+  const sender = await prisma.user.findUnique({ where: { id: req.senderId }, select: { username: true } });
+  return { username: sender.username };
+}
+
+export async function denyFriendRequest(userId, requestId) {
+  const req = await prisma.friendRequest.findUnique({ where: { id: Number(requestId) } });
+  if (!req) throw new Error("Request not found");
+  if (req.receiverId !== userId) throw new Error("Not your request");
+  if (req.status !== "pending") throw new Error("Request is no longer pending");
+
+  await prisma.friendRequest.update({
+    where: { id: req.id },
+    data: { status: "declined", updatedAt: new Date() },
+  });
+  return { ok: true };
+}
+
+export async function removeFriend(userId, friendUsername) {
+  const friend = await getUserByUsernameSafe(friendUsername);
+  const ids = orderFriendIds(userId, friend.id);
+  const friendship = await prisma.friendship.findUnique({
+    where: { user1Id_user2Id: ids },
+  });
+  if (!friendship) throw new Error("Not friends");
+
+  // Also mark any accepted requests as declined
+  await prisma.$transaction([
+    prisma.friendship.delete({ where: { id: friendship.id } }),
+    prisma.friendRequest.updateMany({
+      where: {
+        OR: [
+          { senderId: userId, receiverId: friend.id },
+          { senderId: friend.id, receiverId: userId },
+        ],
+        status: "accepted",
+      },
+      data: { status: "declined", updatedAt: new Date() },
+    }),
+  ]);
+  return { username: friend.username };
+}
+
+export async function requestJoinFriend(userId, friendUsername) {
+  const friend = await getUserByUsernameSafe(friendUsername);
+  const ids = orderFriendIds(userId, friend.id);
+  const friendship = await prisma.friendship.findUnique({
+    where: { user1Id_user2Id: ids },
+  });
+  if (!friendship) throw new Error("Not friends");
+
+  const requester = await prisma.user.findUnique({ where: { id: userId }, select: { username: true } });
+  const requesterSession = await prisma.session.findFirst({
+    where: { userId, endedAt: null, revoked: false, lastSeenAt: { gte: new Date(Date.now() - 15 * 60_000) } },
+    orderBy: { lastSeenAt: "desc" },
+  });
+  if (!requesterSession) throw new Error("You must be in a game to request a join");
+
+  // Rate limit: 10s between join requests
+  const lastRequest = await prisma.clientCommand.findFirst({
+    where: {
+      userId: friend.id,
+      action: "friend_join_request",
+      createdAt: { gte: new Date(Date.now() - 10000) },
+    },
+    include: { user: true },
+  });
+  if (lastRequest) {
+    // Check if there was a join request from this user in the last 10s
+    const payload = lastRequest.payload && typeof lastRequest.payload === "object" ? lastRequest.payload : {};
+    if (payload.fromUserId === userId) {
+      throw new Error("You must wait 10 seconds between join requests");
+    }
+  }
+
+  const cmd = await enqueueClientCommand(friend.id, "friend_join_request", {
+    fromUserId: userId,
+    fromUsername: requester.username,
+    placeId: requesterSession.robloxPlaceId || null,
+    gameId: requesterSession.robloxGameId || null,
+  });
+
+  return { username: friend.username, commandId: cmd.id };
+}
+
+export async function respondToJoinRequest(userId, requesterUsername, accepted) {
+  const requester = await getUserByUsernameSafe(requesterUsername);
+  // Enqueue response to the requester
+  let mySession;
+  if (accepted) {
+    mySession = await prisma.session.findFirst({
+      where: { userId, endedAt: null, revoked: false, lastSeenAt: { gte: new Date(Date.now() - 15 * 60_000) } },
+      orderBy: { lastSeenAt: "desc" },
+    });
+  }
+
+  const responder = await prisma.user.findUnique({ where: { id: userId }, select: { username: true } });
+
+  const cmd = await enqueueClientCommand(requester.id, "friend_join_response", {
+    accepted,
+    fromUsername: responder.username,
+    placeId: accepted ? (mySession?.robloxPlaceId || null) : null,
+    gameId: accepted ? (mySession?.robloxGameId || null) : null,
+  });
+
+  return { ok: true, commandId: cmd.id };
+}
+
+export async function sendFriendMessage(senderId, receiverUsername, content) {
+  const text = String(content || "").trim();
+  if (!text) throw new Error("Message cannot be empty");
+  if (text.length > 500) throw new Error("Message too long (max 500)");
+
+  const receiver = await getUserByUsernameSafe(receiverUsername);
+  if (receiver.id === senderId) throw new Error("Cannot message yourself");
+
+  const ids = orderFriendIds(senderId, receiver.id);
+  const friendship = await prisma.friendship.findUnique({
+    where: { user1Id_user2Id: ids },
+  });
+  if (!friendship) throw new Error("Not friends");
+
+  const msg = await prisma.friendMessage.create({
+    data: { senderId, receiverId: receiver.id, content: text },
+  });
+  return { messageId: msg.id };
+}
+
+export async function getFriendMessages(userId, friendUsername) {
+  let friendId = null;
+  if (friendUsername) {
+    const friend = await getUserByUsernameSafe(friendUsername);
+    friendId = friend.id;
+  }
+
+  const where = friendId
+    ? {
+        OR: [
+          { senderId: userId, receiverId: friendId },
+          { senderId: friendId, receiverId: userId },
+        ],
+      }
+    : {
+        OR: [{ senderId: userId }, { receiverId: userId }],
+      };
+
+  const messages = await prisma.friendMessage.findMany({
+    where,
+    orderBy: { createdAt: "asc" },
+    take: 200,
+    include: {
+      sender: { select: { username: true } },
+      receiver: { select: { username: true } },
+    },
+  });
+
+  // Mark received messages as read
+  const unreadIds = messages
+    .filter((m) => m.receiverId === userId && !m.readAt)
+    .map((m) => m.id);
+  if (unreadIds.length > 0) {
+    await prisma.friendMessage.updateMany({
+      where: { id: { in: unreadIds } },
+      data: { readAt: new Date() },
+    });
+  }
+
+  // Return flat messages list — client groups by sender
+  if (!friendId) {
+    return {
+      messages: messages.map((m) => ({
+        from: m.senderId === userId ? m.receiver.username : m.sender.username,
+        text: m.content,
+        time: Math.floor(new Date(m.createdAt).getTime() / 1000),
+        read: !!m.readAt,
+        fromSelf: m.senderId === userId,
+      })),
+    };
+  }
+
+  return {
+    messages: messages.map((m) => ({
+      from: m.sender.username,
+      text: m.content,
+      time: Math.floor(new Date(m.createdAt).getTime() / 1000),
+      read: !!m.readAt,
+    })),
+  };
+}

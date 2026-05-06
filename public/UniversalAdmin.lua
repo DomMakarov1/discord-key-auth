@@ -999,7 +999,7 @@ local TopBar = create("Frame", {
     Name = "TopBar",
     AnchorPoint = Vector2.new(0.5, 0),
     Position = _defaultTopBarPos,
-    Size = UDim2.new(0, 500, 0, 38),
+    Size = UDim2.new(0, 546, 0, 38),
     ClipsDescendants = false,
     Visible = false,
     BackgroundColor3 = Theme.Background,
@@ -1138,7 +1138,7 @@ end
 -- Right section: action buttons only (larger, white)
 local TopBarRight = create("Frame", {
     Name = "RightSection",
-    Size = UDim2.new(0, 200, 1, 0),
+    Size = UDim2.new(0, 250, 1, 0),
     Position = UDim2.new(1, -12, 0, 0),
     AnchorPoint = Vector2.new(1, 0),
     BackgroundTransparency = 1,
@@ -1156,7 +1156,7 @@ local ButtonRow = create("Frame", {
     create("UIListLayout", {
         FillDirection = Enum.FillDirection.Horizontal,
         SortOrder = Enum.SortOrder.LayoutOrder,
-        Padding = UDim.new(0, 10),
+        Padding = UDim.new(0, 6),
         VerticalAlignment = Enum.VerticalAlignment.Center,
         HorizontalAlignment = Enum.HorizontalAlignment.Right,
     }),
@@ -1202,6 +1202,7 @@ local iconSymbols = {
     { Symbol = ":::", Tooltip = "Commands" },
     { Symbol = ">_",  Tooltip = "Console" },
     { Symbol = "~",   Tooltip = "Network" },
+    { Symbol = "@",   Tooltip = "Friends" },
     { Symbol = "#",   Tooltip = "Settings" },
 }
 
@@ -11881,6 +11882,1208 @@ if topBarButtons["Settings"] then
     end)
 end
 end)()
+-------------------------------------------------
+-- FRIENDS & MESSAGES PANEL
+-------------------------------------------------
+;(function()
+local friendsList = {}
+local conversations = {}
+local activeConvoUsername = nil
+local panelOpen = false
+local currentTab = "friends"
+local incomingRequests = {}
+local outgoingRequests = {}
+local joinRequestPopup = nil
+local lastJoinRequestTime = {}
+
+-- API helper (uses UA_RUNTIME refs since authHttpJson lives in the auth IIFE)
+local function friendsApi(method, path, body)
+    local tok = persistedConfig.authToken
+    if type(tok) ~= "string" or tok == "" then return nil, "Not authenticated" end
+    local fn = UA_RUNTIME._authHttpJson
+    local base = UA_RUNTIME._authApiBase
+    if not fn or not base then return nil, "API not ready" end
+    return fn(method, base .. path, tok, body)
+end
+
+local function loadFriends()
+    local data, err = friendsApi("GET", "/friends")
+    if data then
+        if type(data.friends) == "table" then
+            friendsList = data.friends
+        else
+            friendsList = {}
+        end
+        incomingRequests = type(data.incomingRequests) == "table" and data.incomingRequests or {}
+        outgoingRequests = type(data.outgoingRequests) == "table" and data.outgoingRequests or {}
+    end
+    end
+    return data, err
+end
+
+local function refreshFriendsUI()
+    -- Clear existing friend rows
+    if not friendsScroll then return end
+    for _, child in ipairs(friendsScroll:GetChildren()) do
+        if child:IsA("Frame") and child.Name ~= "UIListLayout" then
+            child:Destroy()
+        end
+    end
+    local layoutOrder = 0
+
+    -- Helper to create section headers
+    local function addSectionHeader(text)
+        local hdr = Instance.new("TextLabel")
+        hdr.Name = "SectionHeader"
+        hdr.Size = UDim2.new(1, -4, 0, 18)
+        hdr.BackgroundTransparency = 1
+        hdr.Text = text
+        hdr.TextColor3 = Theme.AccentPrimary
+        hdr.TextSize = 10
+        hdr.Font = Theme.FontBold
+        hdr.TextXAlignment = Enum.TextXAlignment.Left
+        hdr.LayoutOrder = layoutOrder
+        hdr.Parent = friendsScroll
+        layoutOrder = layoutOrder + 1
+        return hdr
+    end
+
+    local function makeRequestRow(req, kind)
+        local row = Instance.new("Frame")
+        row.Name = kind .. "Req_" .. tostring(req.id or req.username)
+        row.Size = UDim2.new(1, -4, 0, 36)
+        row.BackgroundColor3 = Theme.Surface
+        row.BackgroundTransparency = 0.15
+        row.BorderSizePixel = 0
+        row.LayoutOrder = layoutOrder
+        row.Parent = friendsScroll
+        local rc = Instance.new("UICorner")
+        rc.CornerRadius = UDim.new(0, 6)
+        rc.Parent = row
+        layoutOrder = layoutOrder + 1
+
+        local nameLabel = Instance.new("TextLabel")
+        nameLabel.Position = UDim2.new(0, 10, 0, 5)
+        nameLabel.Size = UDim2.new(0, 120, 0, 16)
+        nameLabel.BackgroundTransparency = 1
+        nameLabel.Text = tostring(req.username or "Unknown")
+        nameLabel.TextColor3 = Theme.Text
+        nameLabel.TextSize = 12
+        nameLabel.Font = Theme.FontBold
+        nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+        nameLabel.Parent = row
+
+        local statusLabel = Instance.new("TextLabel")
+        statusLabel.Position = UDim2.new(0, 10, 0, 22)
+        statusLabel.Size = UDim2.new(0, 120, 0, 12)
+        statusLabel.BackgroundTransparency = 1
+        statusLabel.Text = kind == "Incoming" and "Wants to be friends" or "Request sent"
+        statusLabel.TextColor3 = Theme.TextMuted
+        statusLabel.TextSize = 9
+        statusLabel.Font = Theme.Font
+        statusLabel.TextXAlignment = Enum.TextXAlignment.Left
+        statusLabel.Parent = row
+
+        if kind == "Incoming" then
+            local acceptBtn = Instance.new("TextButton")
+            acceptBtn.AnchorPoint = Vector2.new(1, 0.5)
+            acceptBtn.Position = UDim2.new(1, -56, 0.5, 0)
+            acceptBtn.Size = UDim2.new(0, 48, 0, 20)
+            acceptBtn.BackgroundColor3 = Theme.AccentPrimary
+            acceptBtn.BackgroundTransparency = 0.15
+            acceptBtn.BorderSizePixel = 0
+            acceptBtn.Text = "Accept"
+            acceptBtn.TextColor3 = Theme.AccentPrimary
+            acceptBtn.TextSize = 10
+            acceptBtn.Font = Theme.FontBold
+            acceptBtn.AutoButtonColor = false
+            acceptBtn.Parent = row
+            local abCorner = Instance.new("UICorner")
+            abCorner.CornerRadius = UDim.new(0, 4)
+            abCorner.Parent = acceptBtn
+            acceptBtn.MouseButton1Click:Connect(function()
+                playClickSound()
+                local _, aErr = friendsApi("POST", "/friends/accept", { requestId = req.id })
+                if aErr then
+                    notify("Failed: " .. tostring(aErr), "error", 3)
+                else
+                    notify("Accepted " .. tostring(req.username), "success", 3)
+                    loadFriends()
+                    refreshFriendsUI()
+                end
+            end)
+
+            local denyBtn = Instance.new("TextButton")
+            denyBtn.AnchorPoint = Vector2.new(1, 0.5)
+            denyBtn.Position = UDim2.new(1, -4, 0.5, 0)
+            denyBtn.Size = UDim2.new(0, 48, 0, 20)
+            denyBtn.BackgroundColor3 = Theme.Error
+            denyBtn.BackgroundTransparency = 0.15
+            denyBtn.BorderSizePixel = 0
+            denyBtn.Text = "Deny"
+            denyBtn.TextColor3 = Theme.Error
+            denyBtn.TextSize = 10
+            denyBtn.Font = Theme.FontBold
+            denyBtn.AutoButtonColor = false
+            denyBtn.Parent = row
+            local dbCorner = Instance.new("UICorner")
+            dbCorner.CornerRadius = UDim.new(0, 4)
+            dbCorner.Parent = denyBtn
+            denyBtn.MouseButton1Click:Connect(function()
+                playClickSound()
+                local _, dErr = friendsApi("POST", "/friends/deny", { requestId = req.id })
+                if dErr then
+                    notify("Failed: " .. tostring(dErr), "error", 3)
+                else
+                    notify("Denied " .. tostring(req.username), "info", 2)
+                    loadFriends()
+                    refreshFriendsUI()
+                end
+            end)
+        else
+            local cancelBtn = Instance.new("TextButton")
+            cancelBtn.AnchorPoint = Vector2.new(1, 0.5)
+            cancelBtn.Position = UDim2.new(1, -4, 0.5, 0)
+            cancelBtn.Size = UDim2.new(0, 52, 0, 20)
+            cancelBtn.BackgroundColor3 = Theme.TextMuted
+            cancelBtn.BackgroundTransparency = 0.15
+            cancelBtn.BorderSizePixel = 0
+            cancelBtn.Text = "Cancel"
+            cancelBtn.TextColor3 = Theme.TextMuted
+            cancelBtn.TextSize = 10
+            cancelBtn.Font = Theme.FontBold
+            cancelBtn.AutoButtonColor = false
+            cancelBtn.Parent = row
+            local cbCorner = Instance.new("UICorner")
+            cbCorner.CornerRadius = UDim.new(0, 4)
+            cbCorner.Parent = cancelBtn
+            cancelBtn.MouseButton1Click:Connect(function()
+                playClickSound()
+                local _, cErr = friendsApi("POST", "/friends/remove", { username = req.username })
+                if cErr then
+                    notify("Failed: " .. tostring(cErr), "error", 3)
+                else
+                    notify("Cancelled request to " .. tostring(req.username), "info", 2)
+                    loadFriends()
+                    refreshFriendsUI()
+                end
+            end)
+        end
+        return row
+    end
+
+    -- Show incoming requests
+    if #incomingRequests > 0 then
+        addSectionHeader("INCOMING REQUESTS")
+        for _, req in ipairs(incomingRequests) do
+            makeRequestRow(req, "Incoming")
+        end
+    end
+
+    -- Show outgoing requests
+    if #outgoingRequests > 0 then
+        addSectionHeader("OUTGOING REQUESTS")
+        for _, req in ipairs(outgoingRequests) do
+            makeRequestRow(req, "Outgoing")
+        end
+    end
+
+    if #friendsList == 0 and #incomingRequests == 0 and #outgoingRequests == 0 then
+        local emptyLabel = Instance.new("TextLabel")
+        emptyLabel.Name = "EmptyFriends"
+        emptyLabel.Size = UDim2.new(1, -8, 0, 50)
+        emptyLabel.BackgroundTransparency = 1
+        emptyLabel.Text = "No friends added yet. Type a username above to send a request."
+        emptyLabel.TextColor3 = Theme.TextMuted
+        emptyLabel.TextSize = 12
+        emptyLabel.Font = Theme.Font
+        emptyLabel.TextWrapped = true
+        emptyLabel.LayoutOrder = layoutOrder
+        emptyLabel.Parent = friendsScroll
+    end
+
+    if #friendsList > 0 then
+        for i, friend in ipairs(friendsList) do
+            local row = Instance.new("Frame")
+            row.Name = "FriendRow_" .. tostring(i)
+            row.Size = UDim2.new(1, -4, 0, 62)
+            row.BackgroundColor3 = Theme.Surface
+            row.BackgroundTransparency = 0.15
+            row.BorderSizePixel = 0
+            row.LayoutOrder = layoutOrder
+            row.Parent = friendsScroll
+            layoutOrder = layoutOrder + 1
+
+            local rc = Instance.new("UICorner")
+            rc.CornerRadius = UDim.new(0, 8)
+            rc.Parent = row
+
+            local nameLabel = Instance.new("TextLabel")
+            nameLabel.Name = "FriendName"
+            nameLabel.Position = UDim2.new(0, 10, 0, 8)
+            nameLabel.Size = UDim2.new(0, 150, 0, 18)
+            nameLabel.BackgroundTransparency = 1
+            nameLabel.Text = tostring(friend.username or "Unknown")
+            nameLabel.TextColor3 = Theme.Text
+            nameLabel.TextSize = 13
+            nameLabel.Font = Theme.FontBold
+            nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+            nameLabel.Parent = row
+
+            -- Online indicator dot
+            local dot = Instance.new("Frame")
+            dot.Name = "StatusDot"
+            dot.Position = UDim2.new(1, -16, 0, 10)
+            dot.Size = UDim2.new(0, 8, 0, 8)
+            dot.BackgroundColor3 = friend.online and Theme.Success or Theme.TextMuted
+            dot.BackgroundTransparency = friend.online and 0.2 or 0.5
+            dot.BorderSizePixel = 0
+            dot.Parent = row
+            local dotCorner = Instance.new("UICorner")
+            dotCorner.CornerRadius = UDim.new(1, 0)
+            dotCorner.Parent = dot
+
+            -- Game / status text
+            local statusText = ""
+            if friend.online then
+                statusText = friend.gameName and ("Playing: " .. tostring(friend.gameName)) or "Online"
+            else
+                statusText = "Offline"
+            end
+            local statusLabel = Instance.new("TextLabel")
+            statusLabel.Name = "FriendStatus"
+            statusLabel.Position = UDim2.new(0, 10, 0, 28)
+            statusLabel.Size = UDim2.new(1, -20, 0, 14)
+            statusLabel.BackgroundTransparency = 1
+            statusLabel.Text = statusText
+            statusLabel.TextColor3 = friend.online and Theme.TextDim or Theme.TextMuted
+            statusLabel.TextSize = 11
+            statusLabel.Font = Theme.Font
+            statusLabel.TextXAlignment = Enum.TextXAlignment.Left
+            statusLabel.Parent = row
+
+            -- Button bar at bottom
+            local btnBar = Instance.new("Frame")
+            btnBar.Name = "BtnBar"
+            btnBar.Position = UDim2.new(0, 6, 0, 42)
+            btnBar.Size = UDim2.new(1, -12, 0, 18)
+            btnBar.BackgroundTransparency = 1
+            btnBar.Parent = row
+
+            local btnLayout = Instance.new("UIListLayout")
+            btnLayout.FillDirection = Enum.FillDirection.Horizontal
+            btnLayout.SortOrder = Enum.SortOrder.LayoutOrder
+            btnLayout.Padding = UDim.new(0, 4)
+            btnLayout.Parent = btnBar
+
+            local function makeSmallBtn(parent, text, layoutOrder)
+                local btn = Instance.new("TextButton")
+                btn.Size = UDim2.new(0, 58, 1, 0)
+                btn.BackgroundColor3 = Theme.SurfaceHover
+                btn.BackgroundTransparency = 0.3
+                btn.BorderSizePixel = 0
+                btn.AutoButtonColor = false
+                btn.Text = text
+                btn.TextColor3 = Theme.TextDim
+                btn.TextSize = 10
+                btn.Font = Theme.FontBold
+                btn.LayoutOrder = layoutOrder
+                btn.Parent = parent
+                local bc = Instance.new("UICorner")
+                bc.CornerRadius = UDim.new(0, 4)
+                bc.Parent = btn
+                btn.MouseEnter:Connect(function()
+                    tween(btn, quickTween, { BackgroundTransparency = 0 })
+                end)
+                btn.MouseLeave:Connect(function()
+                    tween(btn, quickTween, { BackgroundTransparency = 0.3 })
+                end)
+                return btn
+            end
+
+            local fUsername = tostring(friend.username or "")
+
+            -- Join button (only if online)
+            if friend.online then
+                local joinBtn = makeSmallBtn(btnBar, "Join", 1)
+                joinBtn.TextColor3 = Theme.AccentPrimary
+                joinBtn.MouseButton1Click:Connect(function()
+                    playClickSound()
+                    -- 10s rate limit
+                    local now = os.clock()
+                    local lastAt = lastJoinRequestTime[fUsername] or 0
+                    if now - lastAt < 10 then
+                        local remaining = math.ceil(10 - (now - lastAt))
+                        notify("Wait " .. tostring(remaining) .. "s before requesting again", "warning", 2)
+                        return
+                    end
+                    lastJoinRequestTime[fUsername] = now
+                    local _, jErr = friendsApi("POST", "/friends/join", { username = fUsername })
+                    if jErr then
+                        notify("Could not request join: " .. tostring(jErr), "error", 3)
+                    else
+                        notify("Request to join sent to " .. fUsername, "success", 3)
+                    end
+                end)
+            end
+
+            -- Message button
+            local msgBtn = makeSmallBtn(btnBar, "Message", 2)
+            msgBtn.MouseButton1Click:Connect(function()
+                playClickSound()
+                activeConvoUsername = fUsername
+                if not conversations[fUsername] then
+                    conversations[fUsername] = {}
+                end
+                currentTab = "chat"
+                refreshChatView()
+            end)
+
+            -- Remove button
+            local rmBtn = makeSmallBtn(btnBar, "Remove", 3)
+            rmBtn.TextColor3 = Theme.Error
+            rmBtn.MouseButton1Click:Connect(function()
+                playClickSound()
+                local _, rErr = friendsApi("POST", "/friends/remove", { username = fUsername })
+                if rErr then
+                    notify("Failed to remove: " .. tostring(rErr), "error", 3)
+                else
+                    notify("Removed " .. fUsername, "info", 2)
+                    loadFriends()
+                    refreshFriendsUI()
+                end
+            end)
+        end
+    end
+    friendsCountLabel.Text = tostring(#friendsList) .. " friend" .. (#friendsList ~= 1 and "s" or "")
+    local onlineCount = 0
+    for _, f in ipairs(friendsList) do if f.online then onlineCount = onlineCount + 1 end end
+    friendsStatusLabel.Text = tostring(onlineCount) .. " online"
+end
+
+local function refreshChatView()
+    -- Hide/show panels
+    friendsMainView.Visible = (currentTab ~= "chat")
+    chatView.Visible = (currentTab == "chat")
+    
+    if currentTab == "chat" and activeConvoUsername then
+        chatTitleLabel.Text = "Chat with " .. activeConvoUsername
+        -- Clear chat messages
+        for _, child in ipairs(chatScroll:GetChildren()) do
+            if child:IsA("Frame") then child:Destroy() end
+        end
+        local msgs = conversations[activeConvoUsername] or {}
+        for i, msg in ipairs(msgs) do
+            local bubble = Instance.new("Frame")
+            bubble.Name = "MsgBubble_" .. tostring(i)
+            local isMine = msg.from == (persistedConfig.loginUser or LocalPlayer.Name)
+            bubble.Size = UDim2.new(1, -8, 0, 0)
+            bubble.AutomaticSize = Enum.AutomaticSize.Y
+            bubble.BackgroundTransparency = 1
+            bubble.LayoutOrder = i
+            bubble.Parent = chatScroll
+
+            local label = Instance.new("TextLabel")
+            label.Size = UDim2.new(0, 0, 0, 0)
+            label.AutomaticSize = Enum.AutomaticSize.XY
+            label.BackgroundColor3 = isMine and Theme.AccentPrimary or Theme.Surface
+            label.BackgroundTransparency = isMine and 0.2 or 0
+            label.Text = (isMine and "" or tostring(msg.from) .. ": ") .. tostring(msg.text or "")
+            label.TextColor3 = Theme.Text
+            label.TextSize = 12
+            label.Font = Theme.Font
+            label.TextWrapped = true
+            label.TextXAlignment = Enum.TextXAlignment.Left
+            label.Position = isMine and UDim2.new(1, -8, 0, 0) or UDim2.new(0, 4, 0, 0)
+            label.AnchorPoint = isMine and Vector2.new(1, 0) or Vector2.new(0, 0)
+            if label.AutomaticSize == Enum.AutomaticSize.XY then
+                label.Size = UDim2.new(0, math.min(label.TextBounds.X + 24, 260), 0, math.max(label.TextBounds.Y + 16, 28))
+            end
+            label.Parent = bubble
+
+            local lc = Instance.new("UICorner")
+            lc.CornerRadius = UDim.new(0, 10)
+            lc.Parent = label
+        end
+        -- Scroll to bottom
+        chatScroll.CanvasPosition = Vector2.new(0, 100000)
+    end
+end
+
+local function refreshConversationsUI()
+    for _, child in ipairs(convosScroll:GetChildren()) do
+        if child:IsA("Frame") then child:Destroy() end
+    end
+    local convoNames = {}
+    for name, _ in pairs(conversations) do
+        table.insert(convoNames, name)
+    end
+    table.sort(convoNames)
+    if #convoNames == 0 then
+        local emptyLabel = Instance.new("TextLabel")
+        emptyLabel.Name = "EmptyConvos"
+        emptyLabel.Size = UDim2.new(1, -8, 0, 40)
+        emptyLabel.BackgroundTransparency = 1
+        emptyLabel.Text = "No conversations yet."
+        emptyLabel.TextColor3 = Theme.TextMuted
+        emptyLabel.TextSize = 12
+        emptyLabel.Font = Theme.Font
+        emptyLabel.Parent = convosScroll
+    else
+        for i, name in ipairs(convoNames) do
+            local row = Instance.new("TextButton")
+            row.Name = "ConvoRow_" .. tostring(i)
+            row.Size = UDim2.new(1, -4, 0, 44)
+            row.BackgroundColor3 = Theme.Surface
+            row.BackgroundTransparency = 0.15
+            row.BorderSizePixel = 0
+            row.AutoButtonColor = false
+            row.Text = ""
+            row.LayoutOrder = i
+            row.Parent = convosScroll
+            local rc = Instance.new("UICorner")
+            rc.CornerRadius = UDim.new(0, 8)
+            rc.Parent = row
+            row.MouseEnter:Connect(function()
+                tween(row, quickTween, { BackgroundTransparency = 0 })
+            end)
+            row.MouseLeave:Connect(function()
+                tween(row, quickTween, { BackgroundTransparency = 0.15 })
+            end)
+
+            local nameLabel = Instance.new("TextLabel")
+            nameLabel.Position = UDim2.new(0, 10, 0.5, -10)
+            nameLabel.Size = UDim2.new(1, -20, 0, 20)
+            nameLabel.BackgroundTransparency = 1
+            nameLabel.Text = name
+            nameLabel.TextColor3 = Theme.Text
+            nameLabel.TextSize = 13
+            nameLabel.Font = Theme.FontBold
+            nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+            nameLabel.Parent = row
+
+            local msgs = conversations[name] or {}
+            local lastMsg = #msgs > 0 and msgs[#msgs].text or ""
+            if #lastMsg > 40 then lastMsg = lastMsg:sub(1, 37) .. "..." end
+
+            local preview = Instance.new("TextLabel")
+            preview.Position = UDim2.new(0, 10, 0.5, 8)
+            preview.Size = UDim2.new(1, -20, 0, 14)
+            preview.BackgroundTransparency = 1
+            preview.Text = lastMsg
+            preview.TextColor3 = Theme.TextMuted
+            preview.TextSize = 10
+            preview.Font = Theme.Font
+            preview.TextXAlignment = Enum.TextXAlignment.Left
+            preview.Parent = row
+
+            row.MouseButton1Click:Connect(function()
+                playClickSound()
+                activeConvoUsername = name
+                currentTab = "chat"
+                refreshChatView()
+            end)
+        end
+    end
+end
+
+-- Build panel
+local friendsPanel = create("Frame", {
+    Name = "FriendsPanel",
+    AnchorPoint = Vector2.new(0.5, 0.4),
+    Position = UDim2.new(0.5, 0, 0.4, 0),
+    Size = UDim2.new(0, 0, 0, 0),
+    BackgroundColor3 = Theme.Background,
+    BackgroundTransparency = 1,
+    BorderSizePixel = 0,
+    ClipsDescendants = true,
+    Visible = false,
+    Parent = ScreenGui,
+    ZIndex = 20,
+}, {
+    create("UICorner", { CornerRadius = Theme.CornerRadiusLg }),
+    create("UIStroke", { Color = Theme.Border, Thickness = 1, Transparency = 0.3 }),
+})
+
+-- Header
+local fpHeader = create("Frame", {
+    Name = "FPHeader",
+    Size = UDim2.new(1, 0, 0, 44),
+    BackgroundTransparency = 1,
+    Parent = friendsPanel,
+})
+makeDraggable(fpHeader, friendsPanel)
+
+create("TextLabel", {
+    Name = "FPTitle",
+    Size = UDim2.new(1, -80, 1, 0),
+    Position = UDim2.new(0, 16, 0, 0),
+    BackgroundTransparency = 1,
+    Text = "Friends & Messages",
+    TextColor3 = Theme.AccentPrimary,
+    TextSize = 15,
+    Font = Theme.FontBold,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    Parent = fpHeader,
+})
+
+local fpCloseBtn = create("TextLabel", {
+    Name = "FPCloseBtn",
+    Size = UDim2.new(0, 28, 0, 28),
+    Position = UDim2.new(1, -40, 0.5, -14),
+    BackgroundTransparency = 1,
+    Text = "X",
+    TextColor3 = Theme.TextMuted,
+    TextSize = 14,
+    Font = Theme.FontBold,
+    Parent = fpHeader,
+})
+fpCloseBtn.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        playClickSound()
+        if closeFriendsPanel then closeFriendsPanel() end
+    end
+end)
+
+-- Accent bar
+create("Frame", {
+    Name = "FPDivider",
+    Size = UDim2.new(1, -24, 0, 2),
+    Position = UDim2.new(0, 12, 0, 44),
+    BackgroundColor3 = Theme.AccentPrimary,
+    BackgroundTransparency = 0.2,
+    BorderSizePixel = 0,
+    Parent = friendsPanel,
+}, {
+    create("UIGradient", {
+        Color = ColorSequence.new({
+            ColorSequenceKeypoint.new(0, Theme.AccentPrimary),
+            ColorSequenceKeypoint.new(0.5, Theme.AccentSecondary),
+            ColorSequenceKeypoint.new(1, Theme.AccentPrimary),
+        }),
+    }),
+})
+
+-- Add friend row (always visible)
+local addFriendFrame = create("Frame", {
+    Name = "AddFriendFrame",
+    Size = UDim2.new(1, -24, 0, 36),
+    Position = UDim2.new(0, 12, 0, 52),
+    BackgroundColor3 = Theme.Surface,
+    BackgroundTransparency = 0.3,
+    BorderSizePixel = 0,
+    Parent = friendsPanel,
+}, {
+    create("UICorner", { CornerRadius = UDim.new(0, 8) }),
+})
+
+local addFriendInput = create("TextBox", {
+    Name = "AddFriendInput",
+    Size = UDim2.new(1, -70, 1, 0),
+    Position = UDim2.new(0, 10, 0, 0),
+    BackgroundTransparency = 1,
+    Text = "",
+    PlaceholderText = "Add friend by username...",
+    PlaceholderColor3 = Theme.TextMuted,
+    TextColor3 = Theme.Text,
+    TextSize = 12,
+    Font = Theme.Font,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    ClearTextOnFocus = false,
+    Parent = addFriendFrame,
+})
+
+local addFriendBtn = create("TextButton", {
+    Name = "AddFriendBtn",
+    Size = UDim2.new(0, 56, 0, 24),
+    Position = UDim2.new(1, -62, 0.5, -12),
+    BackgroundColor3 = Theme.AccentPrimary,
+    BackgroundTransparency = 0.15,
+    BorderSizePixel = 0,
+    AutoButtonColor = false,
+    Text = "Add",
+    TextColor3 = Theme.AccentPrimary,
+    TextSize = 11,
+    Font = Theme.FontBold,
+    Parent = addFriendFrame,
+}, {
+    create("UICorner", { CornerRadius = UDim.new(0, 5) }),
+})
+addFriendBtn.MouseEnter:Connect(function()
+    tween(addFriendBtn, quickTween, { BackgroundTransparency = 0 })
+end)
+addFriendBtn.MouseLeave:Connect(function()
+    tween(addFriendBtn, quickTween, { BackgroundTransparency = 0.15 })
+end)
+addFriendBtn.MouseButton1Click:Connect(function()
+    playClickSound()
+    local username = addFriendInput.Text:gsub("^%s+", ""):gsub("%s+$", "")
+    if username == "" then
+        notify("Enter a username", "warning", 2)
+        return
+    end
+    local _, aErr = friendsApi("POST", "/friends/add", { username = username })
+    if aErr then
+        notify("Failed: " .. tostring(aErr), "error", 3)
+    else
+        notify("Friend request sent to " .. username, "success", 3)
+        addFriendInput.Text = ""
+        loadFriends()
+        refreshFriendsUI()
+    end
+end)
+
+addFriendInput.FocusLost:Connect(function(enterPressed)
+    if enterPressed then
+        playClickSound()
+        local username = addFriendInput.Text:gsub("^%s+", ""):gsub("%s+$", "")
+        if username == "" then
+            notify("Enter a username", "warning", 2)
+            return
+        end
+        local _, aErr = friendsApi("POST", "/friends/add", { username = username })
+        if aErr then
+            notify("Failed: " .. tostring(aErr), "error", 3)
+        else
+            notify("Friend request sent to " .. username, "success", 3)
+            addFriendInput.Text = ""
+            loadFriends()
+            refreshFriendsUI()
+        end
+    end
+end)
+
+-- Tab bar
+local tabBar = create("Frame", {
+    Name = "TabBar",
+    Size = UDim2.new(1, -24, 0, 32),
+    Position = UDim2.new(0, 12, 0, 94),
+    BackgroundTransparency = 1,
+    Parent = friendsPanel,
+}, {
+    create("UIListLayout", {
+        FillDirection = Enum.FillDirection.Horizontal,
+        SortOrder = Enum.SortOrder.LayoutOrder,
+        Padding = UDim.new(0, 0),
+    }),
+})
+
+local friendsTabBtn, messagesTabBtn, friendsTabInd, messagesTabInd
+
+local function makeTab(text, layoutOrder)
+    local btn = create("TextButton", {
+        Size = UDim2.new(0, 80, 1, 0),
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        AutoButtonColor = false,
+        Text = text,
+        TextColor3 = Theme.TextDim,
+        TextSize = 12,
+        Font = Theme.FontBold,
+        LayoutOrder = layoutOrder,
+        Parent = tabBar,
+    })
+    -- Active indicator
+    local indicator = create("Frame", {
+        Name = "TabIndicator",
+        AnchorPoint = Vector2.new(0.5, 0),
+        Position = UDim2.new(0.5, 0, 1, -2),
+        Size = UDim2.new(0, 40, 0, 2),
+        BackgroundColor3 = Theme.AccentPrimary,
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        Parent = btn,
+    }, {
+        create("UICorner", { CornerRadius = UDim.new(1, 0) }),
+    })
+    return btn, indicator
+end
+
+friendsTabBtn, friendsTabInd = makeTab("Friends", 1)
+messagesTabBtn, messagesTabInd = makeTab("Messages", 2)
+
+local function setActiveTab(tab)
+    if not friendsMainView or not chatView or not messagesMainView then return end
+    currentTab = tab
+    if tab == "friends" then
+        tween(friendsTabInd, quickTween, { BackgroundTransparency = 0 })
+        tween(messagesTabInd, quickTween, { BackgroundTransparency = 1 })
+        friendsTabBtn.TextColor3 = Theme.Text
+        messagesTabBtn.TextColor3 = Theme.TextDim
+        friendsMainView.Visible = true
+        chatView.Visible = false
+        messagesMainView.Visible = false
+    elseif tab == "messages" then
+        tween(friendsTabInd, quickTween, { BackgroundTransparency = 1 })
+        tween(messagesTabInd, quickTween, { BackgroundTransparency = 0 })
+        friendsTabBtn.TextColor3 = Theme.TextDim
+        messagesTabBtn.TextColor3 = Theme.Text
+        friendsMainView.Visible = false
+        chatView.Visible = false
+        messagesMainView.Visible = true
+        refreshConversationsUI()
+    else
+        friendsMainView.Visible = false
+        messagesMainView.Visible = false
+        chatView.Visible = true
+    end
+end
+
+friendsTabBtn.MouseButton1Click:Connect(function() playClickSound(); setActiveTab("friends") end)
+messagesTabBtn.MouseButton1Click:Connect(function() playClickSound(); setActiveTab("messages") end)
+
+-- Friends main view
+local friendsMainView = create("Frame", {
+    Name = "FriendsMainView",
+    Size = UDim2.new(1, -16, 1, -148),
+    Position = UDim2.new(0, 8, 0, 130),
+    BackgroundTransparency = 1,
+    Parent = friendsPanel,
+})
+
+local friendsScroll = create("ScrollingFrame", {
+    Name = "FriendsScroll",
+    Size = UDim2.new(1, 0, 1, -24),
+    BackgroundTransparency = 1,
+    BorderSizePixel = 0,
+    ScrollBarThickness = 3,
+    ScrollBarImageColor3 = Color3.fromRGB(255, 255, 255),
+    ScrollBarImageTransparency = 0.5,
+    CanvasSize = UDim2.new(0, 0, 0, 0),
+    AutomaticCanvasSize = Enum.AutomaticSize.Y,
+    Parent = friendsMainView,
+}, {
+    create("UIListLayout", {
+        SortOrder = Enum.SortOrder.LayoutOrder,
+        Padding = UDim.new(0, 4),
+    }),
+})
+
+local friendsCountLabel = create("TextLabel", {
+    Name = "FriendsCount",
+    Size = UDim2.new(1, 0, 0, 18),
+    Position = UDim2.new(0, 0, 1, -20),
+    BackgroundTransparency = 1,
+    Text = "0 friends",
+    TextColor3 = Theme.TextMuted,
+    TextSize = 11,
+    Font = Theme.Font,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    Parent = friendsMainView,
+})
+
+local friendsStatusLabel = create("TextLabel", {
+    Name = "FriendsStatus",
+    Size = UDim2.new(0, 80, 0, 18),
+    Position = UDim2.new(1, -80, 1, -20),
+    BackgroundTransparency = 1,
+    Text = "0 online",
+    TextColor3 = Theme.TextMuted,
+    TextSize = 11,
+    Font = Theme.Font,
+    TextXAlignment = Enum.TextXAlignment.Right,
+    Parent = friendsMainView,
+})
+
+-- Messages main view (conversation list)
+local messagesMainView = create("Frame", {
+    Name = "MessagesMainView",
+    Size = UDim2.new(1, -16, 1, -148),
+    Position = UDim2.new(0, 8, 0, 130),
+    BackgroundTransparency = 1,
+    Visible = false,
+    Parent = friendsPanel,
+})
+
+local convosScroll = create("ScrollingFrame", {
+    Name = "ConvosScroll",
+    Size = UDim2.new(1, 0, 1, 0),
+    BackgroundTransparency = 1,
+    BorderSizePixel = 0,
+    ScrollBarThickness = 3,
+    ScrollBarImageColor3 = Color3.fromRGB(255, 255, 255),
+    ScrollBarImageTransparency = 0.5,
+    CanvasSize = UDim2.new(0, 0, 0, 0),
+    AutomaticCanvasSize = Enum.AutomaticSize.Y,
+    Parent = messagesMainView,
+}, {
+    create("UIListLayout", {
+        SortOrder = Enum.SortOrder.LayoutOrder,
+        Padding = UDim.new(0, 4),
+    }),
+})
+
+-- Chat view
+local chatView = create("Frame", {
+    Name = "ChatView",
+    Size = UDim2.new(1, -16, 1, -148),
+    Position = UDim2.new(0, 8, 0, 130),
+    BackgroundTransparency = 1,
+    Visible = false,
+    Parent = friendsPanel,
+})
+
+local chatBackBtn = create("TextButton", {
+    Name = "ChatBackBtn",
+    Size = UDim2.new(0, 50, 0, 22),
+    BackgroundColor3 = Theme.SurfaceHover,
+    BackgroundTransparency = 0.3,
+    BorderSizePixel = 0,
+    AutoButtonColor = false,
+    Text = "<- Back",
+    TextColor3 = Theme.TextDim,
+    TextSize = 10,
+    Font = Theme.FontBold,
+    Parent = chatView,
+}, {
+    create("UICorner", { CornerRadius = UDim.new(0, 4) }),
+})
+chatBackBtn.MouseEnter:Connect(function() tween(chatBackBtn, quickTween, { BackgroundTransparency = 0 }) end)
+chatBackBtn.MouseLeave:Connect(function() tween(chatBackBtn, quickTween, { BackgroundTransparency = 0.3 }) end)
+chatBackBtn.MouseButton1Click:Connect(function()
+    playClickSound()
+    setActiveTab("messages")
+    refreshConversationsUI()
+end)
+
+local chatTitleLabel = create("TextLabel", {
+    Name = "ChatTitle",
+    Size = UDim2.new(1, -60, 0, 22),
+    Position = UDim2.new(0, 56, 0, 0),
+    BackgroundTransparency = 1,
+    Text = "Chat",
+    TextColor3 = Theme.Text,
+    TextSize = 13,
+    Font = Theme.FontBold,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    Parent = chatView,
+})
+
+local chatScroll = create("ScrollingFrame", {
+    Name = "ChatScroll",
+    Size = UDim2.new(1, 0, 1, -56),
+    Position = UDim2.new(0, 0, 0, 28),
+    BackgroundTransparency = 1,
+    BorderSizePixel = 0,
+    ScrollBarThickness = 3,
+    ScrollBarImageColor3 = Color3.fromRGB(255, 255, 255),
+    ScrollBarImageTransparency = 0.5,
+    CanvasSize = UDim2.new(0, 0, 0, 0),
+    AutomaticCanvasSize = Enum.AutomaticSize.Y,
+    Parent = chatView,
+}, {
+    create("UIListLayout", {
+        SortOrder = Enum.SortOrder.LayoutOrder,
+        Padding = UDim.new(0, 4),
+    }),
+})
+
+local chatInputFrame = create("Frame", {
+    Name = "ChatInputFrame",
+    Size = UDim2.new(1, 0, 0, 36),
+    Position = UDim2.new(0, 0, 1, -36),
+    BackgroundColor3 = Theme.Surface,
+    BackgroundTransparency = 0.3,
+    BorderSizePixel = 0,
+    Parent = chatView,
+}, {
+    create("UICorner", { CornerRadius = UDim.new(0, 8) }),
+})
+
+local chatInput = create("TextBox", {
+    Name = "ChatInput",
+    Size = UDim2.new(1, -60, 1, 0),
+    Position = UDim2.new(0, 10, 0, 0),
+    BackgroundTransparency = 1,
+    Text = "",
+    PlaceholderText = "Type a message...",
+    PlaceholderColor3 = Theme.TextMuted,
+    TextColor3 = Theme.Text,
+    TextSize = 12,
+    Font = Theme.Font,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    ClearTextOnFocus = false,
+    Parent = chatInputFrame,
+})
+
+local chatSendBtn = create("TextButton", {
+    Name = "ChatSendBtn",
+    Size = UDim2.new(0, 46, 0, 24),
+    Position = UDim2.new(1, -52, 0.5, -12),
+    BackgroundColor3 = Theme.AccentPrimary,
+    BackgroundTransparency = 0.15,
+    BorderSizePixel = 0,
+    AutoButtonColor = false,
+    Text = "Send",
+    TextColor3 = Theme.AccentPrimary,
+    TextSize = 11,
+    Font = Theme.FontBold,
+    Parent = chatInputFrame,
+}, {
+    create("UICorner", { CornerRadius = UDim.new(0, 5) }),
+})
+chatSendBtn.MouseEnter:Connect(function() tween(chatSendBtn, quickTween, { BackgroundTransparency = 0 }) end)
+chatSendBtn.MouseLeave:Connect(function() tween(chatSendBtn, quickTween, { BackgroundTransparency = 0.15 }) end)
+
+local function doSendMessage()
+    local text = chatInput.Text:gsub("^%s+", ""):gsub("%s+$", "")
+    if text == "" or not activeConvoUsername then return end
+    local _, sErr = friendsApi("POST", "/friends/message", {
+        username = activeConvoUsername,
+        text = text,
+    })
+    if sErr then
+        notify("Send failed: " .. tostring(sErr), "error", 2)
+        return
+    end
+    if not conversations[activeConvoUsername] then
+        conversations[activeConvoUsername] = {}
+    end
+    table.insert(conversations[activeConvoUsername], {
+        from = persistedConfig.loginUser or LocalPlayer.Name,
+        text = text,
+        time = os.time(),
+    })
+    chatInput.Text = ""
+    refreshChatView()
+end
+
+chatSendBtn.MouseButton1Click:Connect(function()
+    playClickSound()
+    doSendMessage()
+end)
+chatInput.FocusLost:Connect(function(enterPressed)
+    if enterPressed then doSendMessage() end
+end)
+
+-- Toggle functions
+local function openFriendsPanel()
+    if panelOpen then return end
+    panelOpen = true
+    friendsPanel.Visible = true
+    -- Animate open
+    tween(friendsPanel, smoothIn, {
+        Size = UDim2.new(0, 420, 0, 440),
+        BackgroundTransparency = 0,
+    })
+    -- Load data
+    setActiveTab("friends")
+    loadFriends()
+    refreshFriendsUI()
+end
+
+local function closeFriendsPanel()
+    if not panelOpen then return end
+    panelOpen = false
+    local t = tween(friendsPanel, smoothOut, {
+        Size = UDim2.new(0, 0, 0, 0),
+        BackgroundTransparency = 1,
+    })
+    t.Completed:Wait()
+    friendsPanel.Visible = false
+end
+
+local function toggleFriendsPanel()
+    if panelOpen then
+        closeFriendsPanel()
+    else
+        openFriendsPanel()
+    end
+end
+
+-- Join request popup
+local function showJoinRequestPopup(payload, tok, cmdId)
+    local fromUsername = tostring(payload.fromUsername or "Unknown")
+    local placeId = payload.placeId
+    local gameId = payload.gameId
+
+    -- Close existing popup if any
+    if joinRequestPopup then
+        pcall(function() joinRequestPopup.ScreenGui:Destroy() end)
+        joinRequestPopup = nil
+    end
+
+    local sg = Instance.new("ScreenGui")
+    sg.Name = "UniversalAdmin_JoinRequest"
+    sg.ResetOnSpawn = false
+    sg.IgnoreGuiInset = true
+    sg.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    sg.DisplayOrder = 2000000200
+    sg.Parent = CoreGui
+
+    local backdrop = Instance.new("Frame")
+    backdrop.Size = UDim2.new(1, 0, 1, 0)
+    backdrop.BackgroundTransparency = 0.5
+    backdrop.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+    backdrop.Active = true
+    backdrop.Parent = sg
+
+    local box = Instance.new("Frame")
+    box.AnchorPoint = Vector2.new(0.5, 0.5)
+    box.Position = UDim2.new(0.5, 0, 0.45, 0)
+    box.Size = UDim2.new(0, 340, 0, 160)
+    box.BackgroundColor3 = Theme.Surface
+    box.BackgroundTransparency = 0.05
+    box.BorderSizePixel = 0
+    box.Parent = sg
+    local bc = Instance.new("UICorner")
+    bc.CornerRadius = UDim.new(0, 12)
+    bc.Parent = box
+    local bs = Instance.new("UIStroke")
+    bs.Color = Theme.AccentPrimary
+    bs.Thickness = 1
+    bs.Transparency = 0.3
+    bs.Parent = box
+
+    local title = Instance.new("TextLabel")
+    title.Position = UDim2.new(0, 16, 0, 12)
+    title.Size = UDim2.new(1, -32, 0, 22)
+    title.BackgroundTransparency = 1
+    title.Text = "Join Request"
+    title.TextColor3 = Theme.Text
+    title.TextSize = 16
+    title.Font = Theme.FontBold
+    title.TextXAlignment = Enum.TextXAlignment.Center
+    title.Parent = box
+
+    local body = Instance.new("TextLabel")
+    body.Position = UDim2.new(0, 16, 0, 42)
+    body.Size = UDim2.new(1, -32, 0, 40)
+    body.BackgroundTransparency = 1
+    body.Text = fromUsername .. " wants to join your game."
+    body.TextColor3 = Theme.Text
+    body.TextSize = 13
+    body.Font = Theme.Font
+    body.TextWrapped = true
+    body.TextXAlignment = Enum.TextXAlignment.Center
+    body.Parent = box
+
+    local function respond(accepted)
+        pcall(function() sg:Destroy() end)
+        joinRequestPopup = nil
+        friendsApi("POST", "/friends/join-respond", { username = fromUsername, accepted = accepted })
+    end
+
+    local acceptBtn = Instance.new("TextButton")
+    acceptBtn.AnchorPoint = Vector2.new(0.5, 0)
+    acceptBtn.Position = UDim2.new(0.35, 0, 0, 95)
+    acceptBtn.Size = UDim2.new(0, 100, 0, 32)
+    acceptBtn.BackgroundColor3 = Theme.AccentPrimary
+    acceptBtn.BackgroundTransparency = 0.15
+    acceptBtn.BorderSizePixel = 0
+    acceptBtn.Text = "Accept"
+    acceptBtn.TextColor3 = Theme.AccentPrimary
+    acceptBtn.TextSize = 12
+    acceptBtn.Font = Theme.FontBold
+    acceptBtn.AutoButtonColor = false
+    acceptBtn.Parent = box
+    local abCorner = Instance.new("UICorner")
+    abCorner.CornerRadius = UDim.new(0, 6)
+    abCorner.Parent = acceptBtn
+    acceptBtn.MouseButton1Click:Connect(function() respond(true) end)
+
+    local denyBtn = Instance.new("TextButton")
+    denyBtn.AnchorPoint = Vector2.new(0.5, 0)
+    denyBtn.Position = UDim2.new(0.65, 0, 0, 95)
+    denyBtn.Size = UDim2.new(0, 100, 0, 32)
+    denyBtn.BackgroundColor3 = Theme.Error
+    denyBtn.BackgroundTransparency = 0.15
+    denyBtn.BorderSizePixel = 0
+    denyBtn.Text = "Deny"
+    denyBtn.TextColor3 = Theme.Error
+    denyBtn.TextSize = 12
+    denyBtn.Font = Theme.FontBold
+    denyBtn.AutoButtonColor = false
+    denyBtn.Parent = box
+    local dbCorner = Instance.new("UICorner")
+    dbCorner.CornerRadius = UDim.new(0, 6)
+    dbCorner.Parent = denyBtn
+    denyBtn.MouseButton1Click:Connect(function() respond(false) end)
+
+    -- Auto-deny after 20s
+    joinRequestPopup = { ScreenGui = sg }
+    task.delay(20, function()
+        if joinRequestPopup and joinRequestPopup.ScreenGui == sg then
+            respond(false)
+        end
+    end)
+end
+
+-- Join response handler
+local function handleJoinResponse(payload)
+    local fromUsername = tostring(payload.fromUsername or "")
+    local accepted = payload.accepted == true
+    local placeId = payload.placeId
+    local gameId = payload.gameId
+
+    if accepted and placeId then
+        notify(fromUsername .. " accepted your join request - teleporting...", "success", 4)
+        task.wait(0.5)
+        pcall(function()
+            TeleportService:TeleportToPlaceInstance(
+                tonumber(placeId),
+                tostring(gameId or "")
+            )
+        end)
+    elseif accepted then
+        notify(fromUsername .. " accepted but no place info available", "warning", 3)
+    else
+        notify(fromUsername .. " denied your join request", "info", 3)
+    end
+end
+
+-- Wire up top bar button
+if topBarButtons["Friends"] then
+    topBarButtons["Friends"].MouseButton1Click:Connect(function()
+        playClickSound()
+        toggleFriendsPanel()
+    end)
+end
+
+-- Message polling loop (every 5 seconds)
+task.spawn(function()
+    while UA_RUNTIME.active do
+        task.wait(5)
+        if type(persistedConfig.authToken) ~= "string" or persistedConfig.authToken == "" then
+            continue
+        end
+        pcall(function()
+            local data, err = friendsApi("GET", "/friends/messages")
+            if data and type(data.messages) == "table" then
+                local hasNew = false
+                for _, msg in ipairs(data.messages) do
+                    local from = tostring(msg.from or "")
+                    if from ~= "" then
+                        if not conversations[from] then
+                            conversations[from] = {}
+                        end
+                        table.insert(conversations[from], {
+                            from = from,
+                            text = tostring(msg.text or ""),
+                            time = tonumber(msg.time) or os.time(),
+                        })
+                        hasNew = true
+                    end
+                end
+                if hasNew then
+                    -- If chat is open to this person, refresh view
+                    if currentTab == "chat" and activeConvoUsername then
+                        refreshChatView()
+                    end
+                    if currentTab == "messages" then
+                        refreshConversationsUI()
+                    end
+                end
+            end
+            -- Also refresh friends list for online status
+            loadFriends()
+            if currentTab == "friends" and panelOpen then
+                refreshFriendsUI()
+            end
+        end)
+    end
+end)
+end)()
 
 -------------------------------------------------
 -- INPUT HANDLING
@@ -12210,6 +13413,286 @@ end)
 -- flash for a frame while the welcome-back or login UI is preparing.
 ScreenGui.Enabled = false
 Backdrop.Visible = false
+
+-- SIDEBAR LOADING PANEL
+-- Full-height left sidebar -- slides in during auth / update check.
+-- After auth completes:
+--   - If no update detected -> auto-dismisses with "Ready" state
+--   - If update detected -> stays open showing update info, click-outside to close
+-- Uses Instance.new to stay under the Luau register limit.
+local sidebarGui = Instance.new("ScreenGui")
+sidebarGui.Name = "UniversalAdmin_Sidebar"
+sidebarGui.ResetOnSpawn = false
+sidebarGui.IgnoreGuiInset = true
+sidebarGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+sidebarGui.DisplayOrder = 998
+sidebarGui.Parent = CoreGui
+
+-- Invisible backdrop for click-outside capture (only active when update found)
+local sidebarBackdrop = Instance.new("Frame")
+sidebarBackdrop.Name = "SidebarBackdrop"
+sidebarBackdrop.Size = UDim2.new(1, 0, 1, 0)
+sidebarBackdrop.BackgroundTransparency = 1
+sidebarBackdrop.BorderSizePixel = 0
+sidebarBackdrop.Active = false
+sidebarBackdrop.Visible = false
+sidebarBackdrop.Parent = sidebarGui
+
+-- Full-height panel
+local sidebarPanel = Instance.new("Frame")
+sidebarPanel.Name = "SidebarPanel"
+sidebarPanel.Position = UDim2.new(0, -230, 0, 0)
+sidebarPanel.Size = UDim2.new(0, 210, 1, 0)
+sidebarPanel.BackgroundColor3 = Theme.Background
+sidebarPanel.BackgroundTransparency = 0.06
+sidebarPanel.BorderSizePixel = 0
+sidebarPanel.ClipsDescendants = false
+sidebarPanel.Parent = sidebarGui
+
+local spStroke = Instance.new("UIStroke")
+spStroke.Color = Theme.Border
+spStroke.Thickness = 1
+spStroke.Transparency = 0.4
+spStroke.Parent = sidebarPanel
+
+-- Right-edge accent glow (vertical thin strip)
+local spRightGlow = Instance.new("Frame")
+spRightGlow.Name = "SidebarRightGlow"
+spRightGlow.AnchorPoint = Vector2.new(1, 0.5)
+spRightGlow.Position = UDim2.new(1, 0, 0.5, 0)
+spRightGlow.Size = UDim2.new(0, 2, 1, -40)
+spRightGlow.BorderSizePixel = 0
+spRightGlow.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+spRightGlow.Parent = sidebarPanel
+
+local spGlowGrad = Instance.new("UIGradient")
+spGlowGrad.Color = ColorSequence.new({
+    ColorSequenceKeypoint.new(0, Theme.AccentPrimary),
+    ColorSequenceKeypoint.new(0.5, Theme.AccentSecondary),
+    ColorSequenceKeypoint.new(1, Theme.AccentPrimary),
+})
+spGlowGrad.Parent = spRightGlow
+
+-- Content container (vertically centered)
+local spContent = Instance.new("Frame")
+spContent.Name = "SidebarContent"
+spContent.AnchorPoint = Vector2.new(0.5, 0.5)
+spContent.Position = UDim2.new(0.5, 0, 0.5, 0)
+spContent.Size = UDim2.new(1, -24, 0, 230)
+spContent.BackgroundTransparency = 1
+spContent.BorderSizePixel = 0
+spContent.Parent = sidebarPanel
+
+-- Admin icon (centered in content)
+if _adminIconUrl ~= "" then
+    local spIcon = Instance.new("ImageLabel")
+    spIcon.Name = "SidebarIcon"
+    spIcon.AnchorPoint = Vector2.new(0.5, 0)
+    spIcon.Position = UDim2.new(0.5, 0, 0, 0)
+    spIcon.Size = UDim2.new(0, 46, 0, 46)
+    spIcon.BackgroundColor3 = Theme.Background
+    spIcon.BackgroundTransparency = 0.12
+    spIcon.BorderSizePixel = 0
+    spIcon.Image = _adminIconUrl
+    spIcon.ImageColor3 = Theme.AccentPrimary
+    spIcon.ScaleType = Enum.ScaleType.Fit
+    spIcon.Parent = spContent
+
+    local spIconCorner = Instance.new("UICorner")
+    spIconCorner.CornerRadius = UDim.new(1, 0)
+    spIconCorner.Parent = spIcon
+
+    local spIconStroke = Instance.new("UIStroke")
+    spIconStroke.Color = Theme.AccentPrimary
+    spIconStroke.Thickness = 1.5
+    spIconStroke.Transparency = 0.35
+    spIconStroke.Parent = spIcon
+end
+
+local spTitle1 = Instance.new("TextLabel")
+spTitle1.Name = "SidebarTitle1"
+spTitle1.AnchorPoint = Vector2.new(0.5, 0)
+spTitle1.Position = UDim2.new(0.5, 0, 0, 54)
+spTitle1.Size = UDim2.new(1, 0, 0, 20)
+spTitle1.BackgroundTransparency = 1
+spTitle1.Text = "UNIVERSAL"
+spTitle1.TextColor3 = Theme.Text
+spTitle1.TextSize = 15
+spTitle1.Font = Theme.FontBold
+spTitle1.Parent = spContent
+
+local spTitle2 = Instance.new("TextLabel")
+spTitle2.Name = "SidebarTitle2"
+spTitle2.AnchorPoint = Vector2.new(0.5, 0)
+spTitle2.Position = UDim2.new(0.5, 0, 0, 74)
+spTitle2.Size = UDim2.new(1, 0, 0, 20)
+spTitle2.BackgroundTransparency = 1
+spTitle2.Text = "ADMIN"
+spTitle2.TextColor3 = Theme.AccentPrimary
+spTitle2.TextSize = 15
+spTitle2.Font = Theme.FontBold
+spTitle2.Parent = spContent
+
+local spStatus = Instance.new("TextLabel")
+spStatus.Name = "SidebarStatus"
+spStatus.AnchorPoint = Vector2.new(0.5, 0)
+spStatus.Position = UDim2.new(0.5, 0, 0, 108)
+spStatus.Size = UDim2.new(1, 0, 0, 18)
+spStatus.BackgroundTransparency = 1
+spStatus.Text = "Authenticating..."
+spStatus.TextColor3 = Theme.TextDim
+spStatus.TextSize = 12
+spStatus.Font = Theme.Font
+spStatus.Parent = spContent
+
+local spUpdateInfo = Instance.new("TextLabel")
+spUpdateInfo.Name = "SidebarUpdateInfo"
+spUpdateInfo.AnchorPoint = Vector2.new(0.5, 0)
+spUpdateInfo.Position = UDim2.new(0.5, 0, 0, 134)
+spUpdateInfo.Size = UDim2.new(1, 0, 0, 36)
+spUpdateInfo.BackgroundTransparency = 1
+spUpdateInfo.Text = ""
+spUpdateInfo.TextColor3 = Theme.TextMuted
+spUpdateInfo.TextSize = 11
+spUpdateInfo.Font = Theme.Font
+spUpdateInfo.TextWrapped = true
+spUpdateInfo.Visible = false
+spUpdateInfo.Parent = spContent
+
+local spProgressTrack = Instance.new("Frame")
+spProgressTrack.Name = "SidebarProgressTrack"
+spProgressTrack.AnchorPoint = Vector2.new(0.5, 0)
+spProgressTrack.Position = UDim2.new(0.5, 0, 0, 184)
+spProgressTrack.Size = UDim2.new(1, 0, 0, 3)
+spProgressTrack.BackgroundColor3 = Theme.Surface
+spProgressTrack.BackgroundTransparency = 0.3
+spProgressTrack.BorderSizePixel = 0
+spProgressTrack.Parent = spContent
+
+local sptCorner = Instance.new("UICorner")
+sptCorner.CornerRadius = UDim.new(1, 0)
+sptCorner.Parent = spProgressTrack
+
+local spProgressFill = Instance.new("Frame")
+spProgressFill.Name = "SidebarProgressFill"
+spProgressFill.Size = UDim2.new(0, 0, 1, 0)
+spProgressFill.BackgroundColor3 = Theme.AccentPrimary
+spProgressFill.BorderSizePixel = 0
+spProgressFill.Parent = spProgressTrack
+
+local spfCorner = Instance.new("UICorner")
+spfCorner.CornerRadius = UDim.new(1, 0)
+spfCorner.Parent = spProgressFill
+
+local spfGrad = Instance.new("UIGradient")
+spfGrad.Color = ColorSequence.new({
+    ColorSequenceKeypoint.new(0, Theme.AccentPrimary),
+    ColorSequenceKeypoint.new(1, Theme.AccentSecondary),
+})
+spfGrad.Parent = spProgressFill
+
+-- Animate sidebar in from the left
+local sidebarTargetPos = UDim2.new(0, 0, 0, 0)
+tween(sidebarPanel, TweenInfo.new(0.45, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {
+    Position = sidebarTargetPos,
+})
+
+-- Animated loading dots
+local sidebarLoadingActive = true
+task.spawn(function()
+    local dots = { ".", "..", "..." }
+    local i = 1
+    while sidebarGui and sidebarGui.Parent and sidebarLoadingActive do
+        if spStatus and spStatus.Parent and spStatus.Text == "Authenticating..." then
+            spStatus.Text = "Authenticating" .. dots[i]
+            i = (i % 3) + 1
+        end
+        task.wait(0.5)
+    end
+end)
+
+-- Progress bar sweeps 0->85% while loading, then pulses
+task.spawn(function()
+    local t = TweenInfo.new(3.5, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+    local twn = tween(spProgressFill, t, { Size = UDim2.new(0.85, 0, 1, 0) })
+    twn.Completed:Wait()
+    while sidebarGui and sidebarGui.Parent and sidebarLoadingActive do
+        if not spProgressFill or not spProgressFill.Parent then break end
+        tween(spProgressFill, TweenInfo.new(0.8, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut), { BackgroundTransparency = 0.3 })
+        task.wait(0.8)
+        if not spProgressFill or not spProgressFill.Parent then break end
+        tween(spProgressFill, TweenInfo.new(0.8, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut), { BackgroundTransparency = 0 })
+        task.wait(0.8)
+    end
+end)
+
+local function sidebarFillComplete()
+    sidebarLoadingActive = false
+    if spProgressFill and spProgressFill.Parent then
+        tween(spProgressFill, TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+            Size = UDim2.new(1, 0, 1, 0),
+            BackgroundTransparency = 0,
+        })
+    end
+end
+
+local function sidebarSlideOut()
+    local out = TweenInfo.new(0.35, Enum.EasingStyle.Quint, Enum.EasingDirection.In)
+    tween(sidebarPanel, out, {
+        Position = UDim2.new(0, -230, 0, 0),
+        BackgroundTransparency = 1,
+    })
+    for _, d in ipairs(sidebarPanel:GetDescendants()) do
+        pcall(function()
+            if d:IsA("TextLabel") then
+                tween(d, out, { TextTransparency = 1 })
+            elseif d:IsA("ImageLabel") then
+                tween(d, out, { ImageTransparency = 1 })
+            elseif d:IsA("UIStroke") then
+                tween(d, out, { Transparency = 1 })
+            elseif d:IsA("UIGradient") then
+                tween(d, out, { Transparency = NumberSequence.new(1) })
+            end
+        end)
+    end
+    task.delay(0.4, function()
+        if sidebarGui and sidebarGui.Parent then
+            sidebarGui:Destroy()
+        end
+    end)
+end
+
+-- Called from revealMainUI after auth + update check completes
+UA_RUNTIME.sidebarFinishCheck = function(hasUpdate)
+    sidebarFillComplete()
+
+    if hasUpdate then
+        spStatus.Text = "Update available"
+        spStatus.TextColor3 = Theme.Warning
+        spUpdateInfo.Text = "A new version is ready. Re-execute the script to apply the latest update."
+        spUpdateInfo.Visible = true
+        sidebarBackdrop.Active = true
+        sidebarBackdrop.Visible = true
+        sidebarBackdrop.InputBegan:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1 then
+                sidebarSlideOut()
+            end
+        end)
+    else
+        spStatus.Text = "Ready"
+        spStatus.TextColor3 = Theme.Success
+        task.delay(1.2, function()
+            sidebarSlideOut()
+        end)
+    end
+end
+
+-- Called from revealMainUI to switch status to "checking for updates"
+UA_RUNTIME.sidebarBeginCheck = function()
+    sidebarFillComplete()
+    spStatus.Text = "Checking for updates..."
+    spStatus.TextColor3 = Theme.TextDim
+end
 end)()
 
 -------------------------------------------------
@@ -12352,6 +13835,8 @@ local function authHttpJson(method, url, token, bodyTable)
     end
     return parsed, nil
 end
+UA_RUNTIME._authHttpJson = authHttpJson
+UA_RUNTIME._authApiBase = AUTH_API_BASE
 
 requestPeerActionFn = function(targetIdentity, action, payload)
     local tok = persistedConfig.authToken
@@ -12720,6 +14205,16 @@ local function remoteAdminBridgeTick(tok)
                     end
                 end)
                 ackRemoteCommand(tok, cmdId, okKill, okKill and nil or killErr)
+            elseif cmd.action == "friend_join_request" and type(cmd.payload) == "table" then
+                local okShow, showErr = pcall(function()
+                    showJoinRequestPopup(cmd.payload, tok, cmdId)
+                end)
+                ackRemoteCommand(tok, cmdId, okShow, okShow and nil or showErr)
+            elseif cmd.action == "friend_join_response" and type(cmd.payload) == "table" then
+                local okHandle, handleErr = pcall(function()
+                    handleJoinResponse(cmd.payload)
+                end)
+                ackRemoteCommand(tok, cmdId, okHandle, okHandle and nil or handleErr)
             else
                 ackRemoteCommand(tok, cmdId, false, "unknown action")
             end
@@ -13490,6 +14985,30 @@ local function revealMainUI(username)
     if AccountTypeLabel then
         AccountTypeLabel.Text = formatTierWithRemaining(persistedConfig.accountTier, persistedConfig.accountExpiresAt)
     end
+
+    -- Transition sidebar to "checking for updates" state
+    if UA_RUNTIME.sidebarBeginCheck then
+        UA_RUNTIME.sidebarBeginCheck()
+    end
+
+    -- Run immediate update check so sidebar can decide: auto-close or stay open
+    task.spawn(function()
+        local fp = fetchRemoteScriptFingerprint()
+        local hasUpdate = false
+        if fp and fp ~= "" then
+            local prev = persistedConfig.scriptFingerprint
+            if type(prev) == "string" and prev ~= "" and prev ~= fp then
+                hasUpdate = true
+            end
+            if prev ~= fp then
+                persistedConfig.scriptFingerprint = fp
+                savePersistedConfig()
+            end
+        end
+        if UA_RUNTIME.sidebarFinishCheck then
+            UA_RUNTIME.sidebarFinishCheck(hasUpdate)
+        end
+    end)
 
     ScreenGui.Enabled = true
 
