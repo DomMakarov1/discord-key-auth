@@ -35,6 +35,17 @@ local CONFIG = {
     -- Direct image/texture id for nametag icon (preferred when provided).
     UserTagImageId = 119909165185829,
 
+    -- Version & changelog (updated by release tool)
+    Version = "1.0.0",
+    Changelog = {
+        "Initial release",
+        "Movement: fly, noclip, speed, smoothfly, spider, blink, infjump",
+        "ESP: highlights, chams, boxes, skeletons, health bars, distance",
+        "Friends system with requests, join requests, and messaging",
+        "Discord key auth with Premium/Owner tiers",
+        "Peer system for cross-user actions",
+    },
+
     -- UI Theme
     Theme = {
         Background      = Color3.fromRGB(18, 18, 24),
@@ -13571,7 +13582,7 @@ local spContent = Instance.new("Frame")
 spContent.Name = "SidebarContent"
 spContent.AnchorPoint = Vector2.new(0.5, 0.5)
 spContent.Position = UDim2.new(0.5, 0, 0.5, 0)
-spContent.Size = UDim2.new(1, -24, 0, 230)
+spContent.Size = UDim2.new(1, -24, 0, 290)
 spContent.BackgroundTransparency = 1
 spContent.BorderSizePixel = 0
 spContent.Parent = sidebarPanel
@@ -13626,10 +13637,22 @@ spTitle2.TextSize = 15
 spTitle2.Font = Theme.FontBold
 spTitle2.Parent = spContent
 
+local spVersion = Instance.new("TextLabel")
+spVersion.Name = "SidebarVersion"
+spVersion.AnchorPoint = Vector2.new(0.5, 0)
+spVersion.Position = UDim2.new(0.5, 0, 0, 98)
+spVersion.Size = UDim2.new(1, 0, 0, 14)
+spVersion.BackgroundTransparency = 1
+spVersion.Text = "v" .. tostring(CONFIG.Version or "1.0.0")
+spVersion.TextColor3 = Theme.TextMuted
+spVersion.TextSize = 10
+spVersion.Font = Theme.FontMono
+spVersion.Parent = spContent
+
 local spStatus = Instance.new("TextLabel")
 spStatus.Name = "SidebarStatus"
 spStatus.AnchorPoint = Vector2.new(0.5, 0)
-spStatus.Position = UDim2.new(0.5, 0, 0, 108)
+spStatus.Position = UDim2.new(0.5, 0, 0, 120)
 spStatus.Size = UDim2.new(1, 0, 0, 18)
 spStatus.BackgroundTransparency = 1
 spStatus.Text = "Authenticating..."
@@ -13638,24 +13661,84 @@ spStatus.TextSize = 12
 spStatus.Font = Theme.Font
 spStatus.Parent = spContent
 
-local spUpdateInfo = Instance.new("TextLabel")
-spUpdateInfo.Name = "SidebarUpdateInfo"
-spUpdateInfo.AnchorPoint = Vector2.new(0.5, 0)
-spUpdateInfo.Position = UDim2.new(0.5, 0, 0, 134)
-spUpdateInfo.Size = UDim2.new(1, 0, 0, 36)
-spUpdateInfo.BackgroundTransparency = 1
-spUpdateInfo.Text = ""
-spUpdateInfo.TextColor3 = Theme.TextMuted
-spUpdateInfo.TextSize = 11
-spUpdateInfo.Font = Theme.Font
-spUpdateInfo.TextWrapped = true
-spUpdateInfo.Visible = false
-spUpdateInfo.Parent = spContent
+-- Changelog frame (hidden until update check completes with an update)
+local spChangelogFrame = Instance.new("Frame")
+spChangelogFrame.Name = "SidebarChangelog"
+spChangelogFrame.AnchorPoint = Vector2.new(0.5, 0)
+spChangelogFrame.Position = UDim2.new(0.5, 0, 0, 144)
+spChangelogFrame.Size = UDim2.new(1, -8, 0, 0)
+spChangelogFrame.BackgroundColor3 = Theme.Surface
+spChangelogFrame.BackgroundTransparency = 0.3
+spChangelogFrame.BorderSizePixel = 0
+spChangelogFrame.Visible = false
+spChangelogFrame.Parent = spContent
+local sclCorner = Instance.new("UICorner")
+sclCorner.CornerRadius = UDim.new(0, 6)
+sclCorner.Parent = spChangelogFrame
+
+local spChangelogTitle = Instance.new("TextLabel")
+spChangelogTitle.Name = "ChangelogTitle"
+spChangelogTitle.Position = UDim2.new(0, 6, 0, 4)
+spChangelogTitle.Size = UDim2.new(1, -12, 0, 16)
+spChangelogTitle.BackgroundTransparency = 1
+spChangelogTitle.Text = "What's new:"
+spChangelogTitle.TextColor3 = Theme.AccentPrimary
+spChangelogTitle.TextSize = 10
+spChangelogTitle.Font = Theme.FontBold
+spChangelogTitle.TextXAlignment = Enum.TextXAlignment.Left
+spChangelogTitle.Parent = spChangelogFrame
+
+local spChangelogText = Instance.new("TextLabel")
+spChangelogText.Name = "ChangelogText"
+spChangelogText.Position = UDim2.new(0, 6, 0, 22)
+spChangelogText.Size = UDim2.new(1, -12, 0, 0)
+spChangelogText.BackgroundTransparency = 1
+spChangelogText.Text = ""
+spChangelogText.TextColor3 = Theme.TextDim
+spChangelogText.TextSize = 10
+spChangelogText.Font = Theme.Font
+spChangelogText.TextXAlignment = Enum.TextXAlignment.Left
+spChangelogText.TextYAlignment = Enum.TextYAlignment.Top
+spChangelogText.TextWrapped = true
+spChangelogText.Parent = spChangelogFrame
+
+-- Continue button (hidden until update check completes)
+local spContinueBtn = Instance.new("TextButton")
+spContinueBtn.Name = "SidebarContinueBtn"
+spContinueBtn.AnchorPoint = Vector2.new(0.5, 0)
+spContinueBtn.Position = UDim2.new(0.5, 0, 0, 240)
+spContinueBtn.Size = UDim2.new(1, -24, 0, 32)
+spContinueBtn.BackgroundColor3 = Theme.AccentPrimary
+spContinueBtn.BackgroundTransparency = 0.15
+spContinueBtn.BorderSizePixel = 0
+spContinueBtn.Text = "Continue"
+spContinueBtn.TextColor3 = Theme.AccentPrimary
+spContinueBtn.TextSize = 12
+spContinueBtn.Font = Theme.FontBold
+spContinueBtn.AutoButtonColor = false
+spContinueBtn.Visible = false
+spContinueBtn.Parent = spContent
+local scbCorner = Instance.new("UICorner")
+scbCorner.CornerRadius = UDim.new(0, 6)
+scbCorner.Parent = spContinueBtn
+local scbStroke = Instance.new("UIStroke")
+scbStroke.Color = Theme.AccentPrimary
+scbStroke.Thickness = 1
+scbStroke.Transparency = 0.4
+scbStroke.Parent = spContinueBtn
+
+spContinueBtn.MouseButton1Click:Connect(function()
+    sidebarSlideOut()
+    if UA_RUNTIME._revealMainDeferred then
+        UA_RUNTIME._revealMainDeferred()
+        UA_RUNTIME._revealMainDeferred = nil
+    end
+end)
 
 local spProgressTrack = Instance.new("Frame")
 spProgressTrack.Name = "SidebarProgressTrack"
 spProgressTrack.AnchorPoint = Vector2.new(0.5, 0)
-spProgressTrack.Position = UDim2.new(0.5, 0, 0, 184)
+spProgressTrack.Position = UDim2.new(0.5, 0, 0, 252)
 spProgressTrack.Size = UDim2.new(1, 0, 0, 3)
 spProgressTrack.BackgroundColor3 = Theme.Surface
 spProgressTrack.BackgroundTransparency = 0.3
@@ -13759,23 +13842,49 @@ end
 UA_RUNTIME.sidebarFinishCheck = function(hasUpdate)
     sidebarFillComplete()
 
+    -- Hide progress track
+    if spProgressTrack and spProgressTrack.Parent then
+        spProgressTrack.Visible = false
+    end
+    -- Update version label
+    spVersion.Text = "v" .. tostring(CONFIG.Version or "1.0.0")
+
     if hasUpdate then
-        spStatus.Text = "Update available"
-        spStatus.TextColor3 = Theme.Warning
-        spUpdateInfo.Text = "A new version is ready. Re-execute the script to apply the latest update."
-        spUpdateInfo.Visible = true
-        sidebarBackdrop.Active = true
-        sidebarBackdrop.Visible = true
-        sidebarBackdrop.InputBegan:Connect(function(input)
-            if input.UserInputType == Enum.UserInputType.MouseButton1 then
-                sidebarSlideOut()
-            end
-        end)
-    else
-        spStatus.Text = "Ready"
+        spStatus.Text = "Updated to latest version"
         spStatus.TextColor3 = Theme.Success
-        task.delay(1.2, function()
-            sidebarSlideOut()
+
+        -- Build changelog text
+        local changelog = CONFIG.Changelog
+        local clText = ""
+        if type(changelog) == "table" then
+            for i, entry in ipairs(changelog) do
+                clText = clText .. tostring(entry) .. "\n"
+            end
+        end
+        spChangelogText.Text = clText
+
+        -- Size changelog frame to fit text
+        local textSize = TextService:GetTextSize(clText, 10, Theme.Font, Vector2.new(spChangelogFrame.AbsoluteSize.X - 12, 9999))
+        local frameHeight = math.min(math.max(textSize.Y + 30, 50), 120)
+        spChangelogFrame.Size = UDim2.new(1, -8, 0, frameHeight)
+        spChangelogText.Size = UDim2.new(1, -12, 0, frameHeight - 26)
+        spChangelogFrame.Visible = true
+
+        -- Show Continue button
+        spContinueBtn.Position = UDim2.new(0.5, 0, 0, 144 + frameHeight + 8)
+        spContinueBtn.Visible = true
+    else
+        spStatus.Text = "Up to date"
+        spStatus.TextColor3 = Theme.Success
+        -- Auto-continue after brief pause
+        task.delay(1.0, function()
+            if spContinueBtn and spContinueBtn.Parent then
+                sidebarSlideOut()
+                if UA_RUNTIME._revealMainDeferred then
+                    UA_RUNTIME._revealMainDeferred()
+                    UA_RUNTIME._revealMainDeferred = nil
+                end
+            end
         end)
     end
 end
@@ -15079,12 +15188,62 @@ local function revealMainUI(username)
         AccountTypeLabel.Text = formatTierWithRemaining(persistedConfig.accountTier, persistedConfig.accountExpiresAt)
     end
 
+    -- Store the main UI reveal for the sidebar's Continue button to call
+    UA_RUNTIME._revealMainDeferred = function()
+        ScreenGui.Enabled = true
+
+        -- Slide the top bar down from above the screen
+        TopBar.Visible = true
+        local targetPos = _defaultTopBarPos
+        TopBar.Position = UDim2.new(targetPos.X.Scale, targetPos.X.Offset, 0, -50)
+
+        local savedProps = {}
+        TopBar.BackgroundTransparency = 1
+        for _, d in ipairs(TopBar:GetDescendants()) do
+            if d:IsA("TextLabel") or d:IsA("TextButton") then
+                savedProps[d] = { TextTransparency = d.TextTransparency, BackgroundTransparency = d.BackgroundTransparency }
+                d.TextTransparency = 1
+            elseif d:IsA("UIStroke") then
+                savedProps[d] = { Transparency = d.Transparency }
+                d.Transparency = 1
+            elseif d:IsA("ImageLabel") then
+                savedProps[d] = { ImageTransparency = d.ImageTransparency }
+                d.ImageTransparency = 1
+            elseif d:IsA("Frame") and d ~= TopBar then
+                savedProps[d] = { BackgroundTransparency = d.BackgroundTransparency }
+                d.BackgroundTransparency = 1
+            end
+        end
+
+        local slideInfo = TweenInfo.new(0.5, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+        tween(TopBar, slideInfo, {
+            Position = targetPos,
+            BackgroundTransparency = 0.1,
+        })
+        task.delay(0.15, function()
+            local tweenIn = TweenInfo.new(0.4, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+            for d, props in pairs(savedProps) do
+                pcall(function() tween(d, tweenIn, props) end)
+            end
+        end)
+
+        task.delay(0.4, function()
+            notify("Welcome, " .. displayName .. "!", "success", 3)
+            task.delay(0.3, function()
+                notify("Press " .. CONFIG.Prefix .. " to open command palette", "info", 5)
+            end)
+        end)
+
+        startRemoteAdminBridge()
+        startUpdateWatcher()
+    end
+
     -- Transition sidebar to "checking for updates" state
     if UA_RUNTIME.sidebarBeginCheck then
         UA_RUNTIME.sidebarBeginCheck()
     end
 
-    -- Run immediate update check so sidebar can decide: auto-close or stay open
+    -- Run update check so sidebar decides: auto-continue or show changelogs
     task.spawn(function()
         local fp = fetchRemoteScriptFingerprint()
         local hasUpdate = false
@@ -15102,57 +15261,6 @@ local function revealMainUI(username)
             UA_RUNTIME.sidebarFinishCheck(hasUpdate)
         end
     end)
-
-    ScreenGui.Enabled = true
-
-    -- Slide the top bar down from above the screen
-    -- (AvatarContainer is a child of TopBar, so it follows automatically)
-    TopBar.Visible = true
-    local targetPos = _defaultTopBarPos
-    TopBar.Position = UDim2.new(targetPos.X.Scale, targetPos.X.Offset, 0, -50)
-
-    -- Save original transparencies so we restore to correct values (not all 0)
-    local savedProps = {}
-    TopBar.BackgroundTransparency = 1
-    for _, d in ipairs(TopBar:GetDescendants()) do
-        if d:IsA("TextLabel") or d:IsA("TextButton") then
-            savedProps[d] = { TextTransparency = d.TextTransparency, BackgroundTransparency = d.BackgroundTransparency }
-            d.TextTransparency = 1
-        elseif d:IsA("UIStroke") then
-            savedProps[d] = { Transparency = d.Transparency }
-            d.Transparency = 1
-        elseif d:IsA("ImageLabel") then
-            savedProps[d] = { ImageTransparency = d.ImageTransparency }
-            d.ImageTransparency = 1
-        elseif d:IsA("Frame") and d ~= TopBar then
-            savedProps[d] = { BackgroundTransparency = d.BackgroundTransparency }
-            d.BackgroundTransparency = 1
-        end
-    end
-
-    -- Animate down to target position
-    local slideInfo = TweenInfo.new(0.5, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
-    tween(TopBar, slideInfo, {
-        Position = targetPos,
-        BackgroundTransparency = 0.1,
-    })
-    -- Fade in children with slight delay, restoring original values
-    task.delay(0.15, function()
-        local tweenIn = TweenInfo.new(0.4, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
-        for d, props in pairs(savedProps) do
-            pcall(function() tween(d, tweenIn, props) end)
-        end
-    end)
-
-    task.delay(0.4, function()
-        notify("Welcome, " .. displayName .. "!", "success", 3)
-        task.delay(0.3, function()
-            notify("Press " .. CONFIG.Prefix .. " to open command palette", "info", 5)
-        end)
-    end)
-
-    startRemoteAdminBridge()
-    startUpdateWatcher()
 end
 
 -- "Welcome back" — Instance.new only (same register-limit issue as login UI).
