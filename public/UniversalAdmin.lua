@@ -36,9 +36,9 @@ local CONFIG = {
     UserTagImageId = 119909165185829,
 
     -- Version & changelog (updated by release tool)
-    Version = "1.1.1",
+    Version = "1.1.4",
     Changelog = {
-        "Latest version"
+        "Fixed"
     },
 
     -- UI Theme
