@@ -103,8 +103,8 @@ export function createApi() {
     }
 
     const candidates = [
+      path.join(__dirname, "../protected/Admin.lua"),
       path.join(__dirname, "../../Admin.lua"),
-      path.join(__dirname, "../public/Admin.lua"),
     ];
     let scriptContent = null;
     for (const p of candidates) {
