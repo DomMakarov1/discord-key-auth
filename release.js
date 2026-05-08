@@ -5,7 +5,11 @@ import { execSync } from "child_process";
 import readline from "readline";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const LUA_FILE = path.join(__dirname, "public", "UniversalAdmin.lua");
+const LUA_FILES = [
+  path.join(__dirname, "public", "Loader.lua"),
+  path.join(__dirname, "public", "Admin.lua"),
+  path.join(__dirname, "public", "UniversalAdmin.lua"),  // legacy backward compat
+];
 
 function ask(rl, question) {
   return new Promise((resolve) => {
@@ -34,8 +38,21 @@ async function main() {
     output: process.stdout,
   });
 
-  // Read current version from Lua file
-  const content = fs.readFileSync(LUA_FILE, "utf8");
+  // Read current version from first available Lua file
+  let content = null;
+  let primaryFile = null;
+  for (const f of LUA_FILES) {
+    if (fs.existsSync(f)) {
+      content = fs.readFileSync(f, "utf8");
+      primaryFile = f;
+      break;
+    }
+  }
+  if (!content) {
+    console.log("No Lua files found. Aborting.");
+    rl.close();
+    return;
+  }
   const versionMatch = content.match(/Version\s*=\s*"([^"]+)"/);
   const currentVersion = versionMatch ? versionMatch[1] : "0.0.0";
 
@@ -65,20 +82,22 @@ async function main() {
   // Format changelog entries for Lua
   const clEntries = changelog.map((e) => `        "${e}"`).join(",\n");
 
-  // Update version
-  let updated = content.replace(
-    /Version\s*=\s*"[^"]*"/,
-    `Version = "${newVersion}"`
-  );
-
-  // Update changelog — replace the entire Changelog table
+  // Update version and changelog in all files
+  const versionRegex = /Version\s*=\s*"[^"]*"/;
   const clRegex = /Changelog\s*=\s*\{[^}]*\}/s;
   const newCL = `Changelog = {\n${clEntries}\n    }`;
-  updated = updated.replace(clRegex, newCL);
 
-  fs.writeFileSync(LUA_FILE, updated, "utf8");
-  console.log(`\nUpdated ${path.basename(LUA_FILE)} to v${newVersion}`);
-  console.log(`Changelog: ${changelog.length} entries`);
+  let updatedCount = 0;
+  for (const f of LUA_FILES) {
+    if (!fs.existsSync(f)) continue;
+    let fileContent = fs.readFileSync(f, "utf8");
+    fileContent = fileContent.replace(versionRegex, `Version = "${newVersion}"`);
+    fileContent = fileContent.replace(clRegex, newCL);
+    fs.writeFileSync(f, fileContent, "utf8");
+    updatedCount++;
+    console.log(`Updated ${path.basename(f)} to v${newVersion}`);
+  }
+  console.log(`\n${updatedCount} file(s) updated. Changelog: ${changelog.length} entries`);
 
   // Ask about commit + push
   const shouldPush = process.argv.includes("--push") || process.argv.includes("-p");
@@ -87,7 +106,7 @@ async function main() {
     const msg = `Release v${newVersion}`;
     console.log(`\nCommitting: "${msg}"`);
     try {
-      execSync("git add public/UniversalAdmin.lua", {
+      execSync("git add public/Loader.lua public/Admin.lua public/UniversalAdmin.lua", {
         cwd: __dirname,
         stdio: "inherit",
       });

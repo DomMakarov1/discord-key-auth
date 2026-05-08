@@ -22,7 +22,10 @@ export const config = {
   memberRoleId: "1493712567581806724",
   scriptLoaderUrl:
     process.env.SCRIPT_LOADER_URL ||
-    "https://discord-key-auth-production.up.railway.app/UniversalAdmin.lua",
+    "https://discord-key-auth-production.up.railway.app/Loader.lua",
+  adminScriptUrl:
+    process.env.ADMIN_SCRIPT_URL ||
+    "https://discord-key-auth-production.up.railway.app/Admin.lua",
   joinLogsChannelId: process.env.JOIN_LOGS_CHANNEL_ID || "1494373966071201843",
   loginLogsChannelId: process.env.LOGIN_LOGS_CHANNEL_ID || "1494374135365767228",
 };
