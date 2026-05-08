@@ -301,13 +301,6 @@ local function motionTween(duration, style, dir)
     return TweenInfo.new(d, style or Enum.EasingStyle.Quad, dir or Enum.EasingDirection.Out)
 end
 
-
--- Scope gate: wraps admin body to stay under Luau 200-local limit
-local ScreenGui, TopBar, MainFrame, Backdrop, Commands
-local AccountTypeLabel, PlayerNameLabel, StatusText, _defaultTopBarPos
-local notify, nametagState, broadcastPresence, refreshNametags, applyServerPresenceRoster
-local peerOps, requestPeerActionFn, uaLivePeersCache
-do
 local smoothIn, smoothOut, quickTween, toastInTween, toastOutTween
 local function applyMotionProfile()
     smoothIn  = motionTween(0.22, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
@@ -362,8 +355,8 @@ local openUI, closeUI, toggleUI
 local isOpen = false
 local openHelp, closeHelp
 local openNetworkBrowser
-requestPeerActionFn = nil
-nametagState = nil; broadcastPresence = nil; refreshNametags = nil; applyServerPresenceRoster = nil
+local requestPeerActionFn
+local nametagState, broadcastPresence, refreshNametags, applyServerPresenceRoster
 local populateSuggestions
 local showDataPanel
 local reportAlertEvent
@@ -372,7 +365,7 @@ uaLivePeersCache = {}
 -------------------------------------------------
 -- COMMAND REGISTRY
 -------------------------------------------------
-Commands = {}
+local Commands = {}
 
 Commands["help"] = {
     Name = "help",
@@ -1007,7 +1000,7 @@ end
 local existing = CoreGui:FindFirstChild("UniversalAdmin")
 if existing then existing:Destroy() end
 
-ScreenGui = create("ScreenGui", {
+local ScreenGui = create("ScreenGui", {
     Name = "UniversalAdmin",
     ResetOnSpawn = false,
     ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
@@ -1027,7 +1020,7 @@ UIScale.Parent = ScreenGui
 -------------------------------------------------
 -- TOP INFO BAR (always visible)
 -------------------------------------------------
-_defaultTopBarPos = UDim2.new(0.5, 0, 0, 18)
+local _defaultTopBarPos = UDim2.new(0.5, 0, 0, 18)
 if persistedConfig.topBarPos and type(persistedConfig.topBarPos) == "table" then
     local p = persistedConfig.topBarPos
     if type(p.xScale) == "number" and type(p.xOffset) == "number"
@@ -1039,7 +1032,7 @@ end
 -- Used for the center badge fill so it matches one layer of bar grey (see AdminIconHolder).
 local TOP_BAR_BG_TRANSPARENCY = 0.1
 
-TopBar = create("Frame", {
+local TopBar = create("Frame", {
     Name = "TopBar",
     AnchorPoint = Vector2.new(0.5, 0),
     Position = _defaultTopBarPos,
@@ -1096,7 +1089,7 @@ local TopBarLeft = create("Frame", {
     Parent = TopBar,
 })
 
-PlayerNameLabel = create("TextLabel", {
+local PlayerNameLabel = create("TextLabel", {
     Name = "PlayerName",
     Size = UDim2.new(1, 0, 0, 15),
     Position = UDim2.new(0, 0, 0, 5),
@@ -1110,7 +1103,7 @@ PlayerNameLabel = create("TextLabel", {
     Parent = TopBarLeft,
 })
 
-AccountTypeLabel = create("TextLabel", {
+local AccountTypeLabel = create("TextLabel", {
     Name = "AccountType",
     Size = UDim2.new(1, 0, 0, 12),
     Position = UDim2.new(0, 0, 0, 22),
@@ -1344,7 +1337,7 @@ end)
 
 -- Backdrop overlay (dims screen when UI is open)
 -- Click-outside capture for the command palette (invisible, but captures clicks)
-Backdrop = create("Frame", {
+local Backdrop = create("Frame", {
     Name = "Backdrop",
     Size = UDim2.new(1, 0, 1, 0),
     BackgroundColor3 = Color3.fromRGB(0, 0, 0),
@@ -1356,7 +1349,7 @@ Backdrop = create("Frame", {
 })
 
 -- Main container - centered command palette style
-MainFrame = create("Frame", {
+local MainFrame = create("Frame", {
     Name = "MainFrame",
     AnchorPoint = Vector2.new(0.5, 0.3),
     Position = UDim2.new(0.5, 0, 0.3, 0),
@@ -1588,7 +1581,7 @@ local StatusBar = create("Frame", {
     create("UICorner", { CornerRadius = Theme.CornerRadiusLg }),
 })
 
-StatusText = create("TextLabel", {
+local StatusText = create("TextLabel", {
     Name = "StatusText",
     Size = UDim2.new(1, -24, 1, 0),
     Position = UDim2.new(0, 12, 0, 0),
@@ -1636,7 +1629,7 @@ local NotifHolder = create("Frame", {
     }),
 })
 
-function notify(message, notifType, duration, execMs)
+local function notify(message, notifType, duration, execMs)
     notifType = notifType or "info"
     duration = duration or 3
     local notifyCtx = _G.UA_NOTIFY_CONTEXT
@@ -14279,8 +14272,6 @@ end)
 ScreenGui.Enabled = false
 Backdrop.Visible = false
 
-end
-
 -- SIDEBAR LOADING PANEL
 -- Full-height left sidebar -- slides in during auth / update check.
 -- After auth completes:
@@ -16266,10 +16257,8 @@ local function _adminStartup()
 	elseif type(persistedConfig.authToken) ~= "string" or persistedConfig.authToken == "" then
 		-- No auth available. Try refreshing via saved key, or show login as fallback.
 		if type(persistedConfig.loginUser) == "string" and persistedConfig.loginUser ~= "" then
-			-- Attempt token refresh via saved key (best effort)
 			local okRefresh = pcall(function()
 				if refreshAuthTokenViaSavedKey and refreshAuthTokenViaSavedKey() then
-					-- Token refreshed, continue to revealMainUI below
 				else
 					showLoginScreen(revealMainUI)
 					return
