@@ -24,7 +24,7 @@ local CONFIG = {
     -- same loader after you land in the new server.
     -- Raw script URL for auto-reexec after rejoin. Your auth API serves GET /UniversalAdmin.lua
     -- (see discord-key-auth). Set to "" to skip HttpGet (still queues _G.UA_Source if you set it).
-    LoaderUrl = "https://discord-key-auth-production.up.railway.app/UniversalAdmin.lua",
+    LoaderUrl = "https://discord-key-auth-production.up.railway.app/Loader.lua",
     -- Shown in Premium upsell toasts; override with getgenv().UA_DiscordInvite if needed.
     DiscordInvite = "https://discord.gg/KZw9SkPZr4",
 
@@ -14831,7 +14831,7 @@ local function getLoaderUrlForUpdateCheck()
             return g
         end
     end
-    return AUTH_API_BASE .. "/UniversalAdmin.lua"
+    return AUTH_API_BASE .. "/Loader.lua"
 end
 
 local function fetchRemoteScriptFingerprint()
@@ -16243,54 +16243,42 @@ local function showWelcomeBack(savedUser, onDone)
     dismissWelcomeBackAfterDelay(wbGui, card, onDone, savedUser)
 end
 
--- Decide: show full login or "welcome back" depending on saved state.
-local function _uaRunLoginFlow()
-    startUpdateWatcher()
-    if type(persistedConfig.loginUser) == "string" and #persistedConfig.loginUser > 0 then
-        local okSaved = false
-        pcall(function()
-            local data, err, banCode = postJsonAuth(AUTH_API_BASE .. "/auth/script-login-key", {
-                username = persistedConfig.loginUser,
-                key = persistedConfig.loginKey,
-                hwid = getClientHwid(),
-            })
-            if banCode == "ACCESS_BANNED" or banCode == "LOGIN_LOCKOUT" then
-                clearSavedLogin()
-                okSaved = false
-                return
-            end
-            if data and data.ok == true then
-                if data.tier then
-                    persistedConfig.accountTier = data.tier
-                end
-                if data.expiresAt then
-                    persistedConfig.accountExpiresAt = tostring(data.expiresAt)
-                end
-                if type(data.token) == "string" and data.token ~= "" then
-                    persistedConfig.authToken = data.token
-                end
-                savePersistedConfig()
-                pcall(function()
-                    if broadcastPresence then broadcastPresence() end
-                    if refreshNametags then refreshNametags() end
-                end)
-            end
-            okSaved = data and data.ok == true and not err
-        end)
-        if okSaved then
-            -- Start bridge immediately on saved-login path (before welcome card dismiss)
-            -- so /kick and /message can hit as soon as possible.
-            startRemoteAdminBridge()
-            showWelcomeBack(persistedConfig.loginUser, revealMainUI)
-        else
-            clearSavedLogin()
-            showLoginScreen(revealMainUI)
-        end
-    else
-        showLoginScreen(revealMainUI)
-    end
+-- Admin startup: auth is handled by Loader.lua. Read auth state and go straight to main UI.
+local function _adminStartup()
+	-- Restore auth from _G.UA_AuthContext (fast path, set by Loader in memory)
+	if _G.UA_AuthContext and type(_G.UA_AuthContext.token) == "string" and _G.UA_AuthContext.token ~= "" then
+		local ctx = _G.UA_AuthContext
+		persistedConfig.loginUser = ctx.username
+		persistedConfig.loginKey = ctx.key
+		persistedConfig.authToken = ctx.token
+		persistedConfig.accountTier = ctx.tier
+		persistedConfig.accountExpiresAt = ctx.expiresAt
+		savePersistedConfig()
+	elseif type(persistedConfig.authToken) ~= "string" or persistedConfig.authToken == "" then
+		-- No auth available. Try refreshing via saved key, or show login as fallback.
+		if type(persistedConfig.loginUser) == "string" and persistedConfig.loginUser ~= "" then
+			-- Attempt token refresh via saved key (best effort)
+			local okRefresh = pcall(function()
+				if refreshAuthTokenViaSavedKey and refreshAuthTokenViaSavedKey() then
+					-- Token refreshed, continue to revealMainUI below
+				else
+					showLoginScreen(revealMainUI)
+					return
+				end
+			end)
+			if not okRefresh then
+				showLoginScreen(revealMainUI)
+				return
+			end
+		else
+			showLoginScreen(revealMainUI)
+			return
+		end
+	end
+	-- Go directly to main admin UI (skip all login UI)
+	revealMainUI(persistedConfig.loginUser or "User")
 end
-_uaRunLoginFlow()
+_adminStartup()
 end)()
 
 -- IIFE: main chunk is at Luau's ~200 local limit; `do` does not get a fresh register pool.
