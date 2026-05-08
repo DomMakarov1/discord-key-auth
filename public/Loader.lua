@@ -82,6 +82,7 @@ local SoundService   = game:GetService("SoundService")
 local TeleportService = game:GetService("TeleportService")
 
 local LocalPlayer = Players.LocalPlayer
+print('[UA Loader] Services loaded')
 local UA_RUNTIME = rawget(_G, "UA_RUNTIME")
 if type(UA_RUNTIME) ~= "table" then
     UA_RUNTIME = {}
@@ -372,6 +373,7 @@ end)
 -- Wrapped in IIFE: avoids adding another local on the main chunk (Luau ~200 limit).
 -------------------------------------------------
 ;(function()
+print('[UA Loader] IIFE started')
 
 local function normalizeApiBase(url)
     if type(url) ~= "string" or url == "" then
@@ -1835,7 +1837,8 @@ local function _uaRunLoginFlow()
             revealMainUI(persistedConfig.loginUser)
         else
             clearSavedLogin()
-            showLoginScreen(revealMainUI)
+	print('[UA Loader] Showing login screen...')
+	            showLoginScreen(revealMainUI)
         end
     else
         showLoginScreen(revealMainUI)
@@ -1843,3 +1846,5 @@ local function _uaRunLoginFlow()
 end
 _uaRunLoginFlow()
 end)()
+
+print('[UA Loader] Script loaded successfully')
