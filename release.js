@@ -7,7 +7,7 @@ import readline from "readline";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const LUA_FILES = [
   path.join(__dirname, "public", "Loader.lua"),
-  path.join(__dirname, "public", "Admin.lua"),
+  path.join(__dirname, "protected", "Admin.lua"),
   path.join(__dirname, "public", "UniversalAdmin.lua"),  // legacy backward compat
 ];
 
@@ -106,7 +106,7 @@ async function main() {
     const msg = `Release v${newVersion}`;
     console.log(`\nCommitting: "${msg}"`);
     try {
-      execSync("git add public/Loader.lua public/Admin.lua public/UniversalAdmin.lua", {
+      execSync("git add public/Loader.lua protected/Admin.lua public/UniversalAdmin.lua", {
         cwd: __dirname,
         stdio: "inherit",
       });
