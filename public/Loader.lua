@@ -265,11 +265,7 @@ if persistedConfig.hotkeyAlwaysActive and type(persistedConfig.hotkeyAlwaysActiv
     end
 end
 
-if persistedConfig.uiScale and type(persistedConfig.uiScale) == "number" then
-    local us = ScreenGui:FindFirstChild("UIScale")
-    if us then
-        us.Scale = math.clamp(persistedConfig.uiScale / 100, 0.5, 2)
-    end
+if persistedConfig.uiScale and type(persistedConfig.uiScale) == "number" then pcall(function() if CoreGui then end end) end -- uiScale applied by Admin.lua
 end
 local function create(className, properties, children)
     local inst = Instance.new(className)
@@ -1356,7 +1352,7 @@ local function loginUnloadClicked(L)
                     end
                 end
             end)
-            pcall(function() if ScreenGui and ScreenGui.Parent then ScreenGui:Destroy() end end)
+            pcall(function() if CoreGui:FindFirstChild("UniversalAdmin") then CoreGui.UniversalAdmin:Destroy() end end)
             for _, child in ipairs(CoreGui:GetChildren()) do
                 if child.Name:sub(1, 15) == "UniversalAdmin" then
                     pcall(function() child:Destroy() end)
@@ -1645,9 +1641,7 @@ local function loginWireEvents(L, onSuccess)
 end
 
 local function showLoginScreen(onSuccess)
-    TopBar.Visible = false
-    MainFrame.Visible = false
-    Backdrop.Visible = false
+    pcall(function() TopBar.Visible = false end); pcall(function() MainFrame.Visible = false end); pcall(function() Backdrop.Visible = false end)
     local L = { passRealText = "", submitted = false, accessBlocked = false }
     loginBuildBackdropAndCard(L)
     loginBuildUserPassFields(L)
@@ -1838,7 +1832,7 @@ local function _uaRunLoginFlow()
         if okSaved then
             -- Start bridge immediately on saved-login path (before welcome card dismiss)
             -- so /kick and /message can hit as soon as possible.
-            showWelcomeBack(persistedConfig.loginUser, revealMainUI)
+            revealMainUI(persistedConfig.loginUser)
         else
             clearSavedLogin()
             showLoginScreen(revealMainUI)
