@@ -265,8 +265,8 @@ if persistedConfig.hotkeyAlwaysActive and type(persistedConfig.hotkeyAlwaysActiv
     end
 end
 
-if persistedConfig.uiScale and type(persistedConfig.uiScale) == "number" then pcall(function() if CoreGui then end end) end -- uiScale applied by Admin.lua
-end
+
+
 local function create(className, properties, children)
     local inst = Instance.new(className)
     for k, v in pairs(properties or {}) do
