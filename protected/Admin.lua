@@ -12755,7 +12755,7 @@ end)()
 -------------------------------------------------
 ;(function()
 local friendsList = {}
-end  -- scope gate 3
+
 local conversations = {}
 
 local activeConvoUsername = nil
@@ -14243,6 +14243,8 @@ hookChat()
     end)
 end)()
 end)()
+
+end  -- scope gate 3
 
 -------------------------------------------------
 -- DRAGGABLE UI (unified system)
