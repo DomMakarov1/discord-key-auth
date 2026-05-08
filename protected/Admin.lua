@@ -367,6 +367,9 @@ uaLivePeersCache = {}
 -------------------------------------------------
 local Commands = {}
 
+do  -- scope gate 1: command definitions
+Commands = {}
+
 Commands["help"] = {
     Name = "help",
     Aliases = {"cmds", "commands"},
@@ -942,7 +945,7 @@ local function getMatchingCommands(query)
     return results
 end
 
-local function executeCommand(input)
+function executeCommand(input)
     local startedAt = os.clock()
     local parts = input:split(" ")
     local cmdName = parts[1]:lower()
@@ -994,6 +997,8 @@ local function executeCommand(input)
 end
 
 -------------------------------------------------
+
+end  -- scope gate 1
 -- UI CONSTRUCTION
 -------------------------------------------------
 -- Destroy any previous instance
@@ -3105,6 +3110,7 @@ Commands["noclip"].Execute = function()
 end
 
 -------------------------------------------------
+do  -- scope gate 2: feature implementations
 -- ESP MECHANICS + PANEL
 -------------------------------------------------
 -- Extended ESP: highlight/chams, names, health bars, distance, boxes, skeletons.
@@ -5933,7 +5939,9 @@ end)()
 -- 2) trigger bind flings the closest player to your cursor once
 -- Includes mode selector plus silent/resolver toggles.
 -------------------------------------------------
+end  -- scope gate 2
 S.clickFling = S.clickFling or {
+
     enabled   = false,
     bind      = Enum.KeyCode.E,
     triggerBind = Enum.KeyCode.R,
@@ -6296,6 +6304,7 @@ end
 -------------------------------------------------
 -- PREFIX COMMAND
 -------------------------------------------------
+do  -- scope gate 3: more features
 Commands["prefix"].Execute = function(args)
     if not args or not args[1] then error("Usage: ;prefix <newprefix>") end
     local newPrefix = args[1]
@@ -12746,7 +12755,9 @@ end)()
 -------------------------------------------------
 ;(function()
 local friendsList = {}
+end  -- scope gate 3
 local conversations = {}
+
 local activeConvoUsername = nil
 local panelOpen = false
 local currentTab = "friends"
