@@ -1757,31 +1757,34 @@ local function revealMainUI(username)
         key = persistedConfig.loginKey,
     }
 
-    -- Fetch and execute the protected Admin.lua
-    task.spawn(function()
-        local adminUrl = CONFIG.AdminScriptUrl
-        if type(persistedConfig.authToken) == "string" and persistedConfig.authToken ~= "" then
-            adminUrl = adminUrl .. "?token=" .. persistedConfig.authToken
-        end
+		-- Fetch and execute the protected Admin.lua (POST with token + HWID in body)
+		task.spawn(function()
+			local reqFn = getRequestFn()
+			if not reqFn then
+				warn("UA Loader: No HTTP function available to fetch Admin.lua")
+				return
+			end
 
-        local reqFn = getRequestFn()
-        if not reqFn then
-            warn("UA Loader: No HTTP function available to fetch Admin.lua")
-            return
-        end
-
-        local ok, res = pcall(function()
-            return reqFn({ Url = adminUrl, Method = "GET" })
-        end)
-        if not ok or not res or tonumber(res.StatusCode) ~= 200 then
-            local errMsg = res and tostring(res.Body or res.StatusCode or "unknown") or "request failed"
-            warn("UA Loader: Failed to fetch Admin.lua: " .. errMsg)
-            if res and tonumber(res.StatusCode) == 401 then
-                clearSavedLogin()
-            end
-            return
-        end
-
+			local body = {
+				token = persistedConfig.authToken,
+				hwid = getClientHwid(),
+			}
+			local ok, res = pcall(function()
+				return reqFn({
+					Url = CONFIG.AdminScriptUrl,
+					Method = "POST",
+					Headers = { ["Content-Type"] = "application/json" },
+					Body = HttpService:JSONEncode(body),
+				})
+			end)
+			if not ok or not res or tonumber(res.StatusCode) ~= 200 then
+				local errMsg = res and tostring(res.Body or res.StatusCode or "unknown") or "request failed"
+				warn("UA Loader: Failed to fetch Admin.lua: " .. errMsg)
+				if res and tonumber(res.StatusCode) == 401 then
+					clearSavedLogin()
+				end
+				return
+			end
         local adminSource = tostring(res.Body or "")
         if adminSource == "" then
             warn("UA Loader: Empty Admin.lua response")
