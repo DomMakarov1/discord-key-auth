@@ -301,6 +301,13 @@ local function motionTween(duration, style, dir)
     return TweenInfo.new(d, style or Enum.EasingStyle.Quad, dir or Enum.EasingDirection.Out)
 end
 
+
+-- Scope gate: wraps admin body to stay under Luau 200-local limit
+local ScreenGui, TopBar, MainFrame, Backdrop, Commands
+local AccountTypeLabel, PlayerNameLabel, StatusText, _defaultTopBarPos
+local notify, nametagState, broadcastPresence, refreshNametags, applyServerPresenceRoster
+local peerOps, requestPeerActionFn, uaLivePeersCache
+do
 local smoothIn, smoothOut, quickTween, toastInTween, toastOutTween
 local function applyMotionProfile()
     smoothIn  = motionTween(0.22, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
@@ -355,8 +362,8 @@ local openUI, closeUI, toggleUI
 local isOpen = false
 local openHelp, closeHelp
 local openNetworkBrowser
-local requestPeerActionFn
-local nametagState, broadcastPresence, refreshNametags, applyServerPresenceRoster
+requestPeerActionFn = nil
+nametagState = nil; broadcastPresence = nil; refreshNametags = nil; applyServerPresenceRoster = nil
 local populateSuggestions
 local showDataPanel
 local reportAlertEvent
@@ -365,7 +372,7 @@ uaLivePeersCache = {}
 -------------------------------------------------
 -- COMMAND REGISTRY
 -------------------------------------------------
-local Commands = {}
+Commands = {}
 
 Commands["help"] = {
     Name = "help",
@@ -1000,7 +1007,7 @@ end
 local existing = CoreGui:FindFirstChild("UniversalAdmin")
 if existing then existing:Destroy() end
 
-local ScreenGui = create("ScreenGui", {
+ScreenGui = create("ScreenGui", {
     Name = "UniversalAdmin",
     ResetOnSpawn = false,
     ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
@@ -1020,7 +1027,7 @@ UIScale.Parent = ScreenGui
 -------------------------------------------------
 -- TOP INFO BAR (always visible)
 -------------------------------------------------
-local _defaultTopBarPos = UDim2.new(0.5, 0, 0, 18)
+_defaultTopBarPos = UDim2.new(0.5, 0, 0, 18)
 if persistedConfig.topBarPos and type(persistedConfig.topBarPos) == "table" then
     local p = persistedConfig.topBarPos
     if type(p.xScale) == "number" and type(p.xOffset) == "number"
@@ -1032,7 +1039,7 @@ end
 -- Used for the center badge fill so it matches one layer of bar grey (see AdminIconHolder).
 local TOP_BAR_BG_TRANSPARENCY = 0.1
 
-local TopBar = create("Frame", {
+TopBar = create("Frame", {
     Name = "TopBar",
     AnchorPoint = Vector2.new(0.5, 0),
     Position = _defaultTopBarPos,
@@ -1089,7 +1096,7 @@ local TopBarLeft = create("Frame", {
     Parent = TopBar,
 })
 
-local PlayerNameLabel = create("TextLabel", {
+PlayerNameLabel = create("TextLabel", {
     Name = "PlayerName",
     Size = UDim2.new(1, 0, 0, 15),
     Position = UDim2.new(0, 0, 0, 5),
@@ -1103,7 +1110,7 @@ local PlayerNameLabel = create("TextLabel", {
     Parent = TopBarLeft,
 })
 
-local AccountTypeLabel = create("TextLabel", {
+AccountTypeLabel = create("TextLabel", {
     Name = "AccountType",
     Size = UDim2.new(1, 0, 0, 12),
     Position = UDim2.new(0, 0, 0, 22),
@@ -1337,7 +1344,7 @@ end)
 
 -- Backdrop overlay (dims screen when UI is open)
 -- Click-outside capture for the command palette (invisible, but captures clicks)
-local Backdrop = create("Frame", {
+Backdrop = create("Frame", {
     Name = "Backdrop",
     Size = UDim2.new(1, 0, 1, 0),
     BackgroundColor3 = Color3.fromRGB(0, 0, 0),
@@ -1349,7 +1356,7 @@ local Backdrop = create("Frame", {
 })
 
 -- Main container - centered command palette style
-local MainFrame = create("Frame", {
+MainFrame = create("Frame", {
     Name = "MainFrame",
     AnchorPoint = Vector2.new(0.5, 0.3),
     Position = UDim2.new(0.5, 0, 0.3, 0),
@@ -1581,7 +1588,7 @@ local StatusBar = create("Frame", {
     create("UICorner", { CornerRadius = Theme.CornerRadiusLg }),
 })
 
-local StatusText = create("TextLabel", {
+StatusText = create("TextLabel", {
     Name = "StatusText",
     Size = UDim2.new(1, -24, 1, 0),
     Position = UDim2.new(0, 12, 0, 0),
@@ -1629,7 +1636,7 @@ local NotifHolder = create("Frame", {
     }),
 })
 
-local function notify(message, notifType, duration, execMs)
+function notify(message, notifType, duration, execMs)
     notifType = notifType or "info"
     duration = duration or 3
     local notifyCtx = _G.UA_NOTIFY_CONTEXT
@@ -14271,6 +14278,8 @@ end)
 -- flash for a frame while the welcome-back or login UI is preparing.
 ScreenGui.Enabled = false
 Backdrop.Visible = false
+
+end
 
 -- SIDEBAR LOADING PANEL
 -- Full-height left sidebar -- slides in during auth / update check.
