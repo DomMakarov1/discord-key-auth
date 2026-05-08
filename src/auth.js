@@ -351,6 +351,28 @@ export function verifyToken(token) {
   return jwt.verify(token, config.jwtSecret);
 }
 
+/**
+ * Lightweight access check for script delivery (no DB user lookup, no session bump).
+ * If hwid is provided, rejects mismatched sessions so a leaked token can't be
+ * reused from a different device.
+ */
+export async function verifyScriptAccess(token, hwid = null) {
+  const payload = verifyToken(token);
+  const userId = Number(payload.sub);
+  if (!userId || !payload.jti) throw new Error("Invalid token payload");
+
+  const session = await prisma.session.findUnique({ where: { tokenJti: payload.jti } });
+  if (!session || session.revoked || session.endedAt) {
+    throw new Error("Session revoked");
+  }
+
+  if (hwid && session.hwid && session.hwid !== hwid) {
+    throw new Error("Device mismatch — re-authenticate with this device");
+  }
+
+  return payload;
+}
+
 export async function validateToken(token) {
   const payload = verifyToken(token);
   const userId = Number(payload.sub);
